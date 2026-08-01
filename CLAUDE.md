@@ -37,8 +37,12 @@ pnpm dev              # dev server
 pnpm db:push          # push schema to Neon
 pnpm db:seed          # seed loads + carriers
 pnpm db:studio        # drizzle studio
+pnpm test             # regression suite — must be green before any commit
 pnpm eval             # run the adversarial eval suite, print scorecard
 ```
+
+> `pnpm db:push` needs `--force` (config sets `strict: true`):
+> `pnpm exec drizzle-kit push --force`
 
 ## Hard rules
 
@@ -60,6 +64,39 @@ pnpm eval             # run the adversarial eval suite, print scorecard
 - **Cache every external API response.** The demo cannot depend on a live government API
   being up during an interview.
 
+## Research protocol
+
+**Never answer from memory about a library, API, or service.** Training data goes stale and
+this project runs on versions newer than most of it (Next 16, Drizzle 0.45, Zod 4, AI SDK).
+
+- **Context7 MCP** — for any library, framework, or SDK question. Drizzle, Next, Zod, Vitest,
+  the AI SDK. Use it even when the answer feels obvious.
+- **Exa MCP** — for anything on the open web. FMCSA and Socrata field semantics, freight
+  domain questions, what carriers and brokers actually do, competitor behavior.
+- Next.js specifically also ships its own docs at `node_modules/next/dist/docs/` — read those
+  for routing, caching, and data-fetching questions.
+
+Look it up, then write the code. Not the other way around.
+
+## Testing bar
+
+The point of the suite is to know, mechanically, whether the thing still works. It is not
+coverage theater.
+
+- **Every pure decision function gets table-driven tests.** `evaluateCompliance` is
+  safety-critical — a wrong `allow` is the worst bug this system can have. Enumerate the
+  combinations, don't sample them.
+- **Never hit a live external API from a test.** Record one real payload per case, commit it
+  as a fixture under `src/**/__fixtures__/`, and test against that. Tests must pass offline,
+  on a plane, with the government API down.
+- **Fixtures come from real lookups.** Record them from actual FMCSA/Socrata responses, then
+  freeze. Real shape, deterministic replay.
+- **Contract tests across implementations.** Every `CarrierDataSource` must normalize to an
+  identical `CarrierRecord` shape, so swapping Socrata for QCMobile can't silently change
+  behavior downstream.
+- **When a bug is found, the regression test lands in the same commit as the fix.**
+- `pnpm test` green is a precondition for every commit. No exceptions.
+
 ## Where truth lives
 
 | File | Holds |
@@ -73,8 +110,10 @@ pnpm eval             # run the adversarial eval suite, print scorecard
 ## Session protocol
 
 - **Start:** read `CLAUDE.md`, then `docs/STATE.md`, then continue from "Next command".
-- **During:** commit at each checkpoint. Code and docs go in the *same* commit so they
-  can never drift.
+- **During:** commit in **logical chunks as you go**, never one dump at the end. One commit =
+  one coherent unit that typechecks and passes `pnpm test` on its own. A reviewer should be
+  able to read the log and follow the reasoning. Code and its docs go in the *same* commit so
+  they can never drift.
 - **End:** stop at a green checkpoint, not when context runs out. Update `STATE.md`,
   append to `DECISIONS.md` and the active `docs/pitch/*.md`, commit, then clear.
 

@@ -17,12 +17,16 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [x] `/loads` board renders from the DB
 
 ## Day 2 — Carrier data + compliance gate
-- [ ] `CarrierDataSource` interface
+- [ ] Vitest set up, `pnpm test` wired
+- [ ] `CarrierDataSource` interface + normalized `CarrierRecord`
 - [ ] `SocrataCarrierSource` — no API key, works immediately
-- [ ] `QCMobileCarrierSource` — swaps in when the FMCSA WebKey lands
 - [ ] Response caching in Postgres (the demo cannot depend on a live gov API)
-- [ ] `evaluateCompliance()` → `{ decision: allow | flag | block, reasons[] }`
-- [ ] Fixture set: known-good carrier, revoked authority, out-of-service, nonexistent MC
+- [ ] `evaluateCompliance()` → `{ decision: allow | flag | block, reasons[] }` — pure, no I/O
+- [ ] Real payloads recorded as offline fixtures: active · revoked · out-of-service ·
+      nonexistent MC. Record the chosen MC numbers in `STATE.md` for reproducibility.
+- [ ] **Regression suite green:** table-driven compliance tests, normalization tests against
+      recorded payloads, cache read-through test, cross-source contract test
+- [ ] `QCMobileCarrierSource` — swaps in behind the same interface when the WebKey lands
 
 ## Day 3 — Agent core + eval skeleton
 - [ ] Headless tool-calling loop (Vercel AI SDK + Anthropic)
