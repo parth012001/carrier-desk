@@ -66,7 +66,9 @@ function recordFor(axes: Axes): CarrierRecord {
       powerUnits: true,
       priorRevocation: true,
       authorityGrantedAt: true,
+      authorizedForHire: true,
     },
+    ambiguousCount: 0,
     ambiguousWith: [],
   };
 }
@@ -91,6 +93,8 @@ function expected(axes: Axes): { decision: ComplianceDecision; codes: Compliance
   if (axes.powerUnits === 0) flags.push("NO_POWER_UNITS");
 
   if (axes.isOutOfService === null) infos.push("OOS_NOT_VERIFIED");
+  if (axes.authorizedForHire === null && axes.authorityStatus === "active")
+    infos.push("FOR_HIRE_NOT_VERIFIED");
 
   const decision: ComplianceDecision =
     blocks.length > 0 ? "block" : flags.length > 0 ? "flag" : "allow";
@@ -263,7 +267,7 @@ describe("AMBIGUOUS_MC", () => {
 
   it("flags an otherwise clean carrier whose MC maps to several entities", () => {
     const result = evaluateCompliance(
-      { ...recordFor(clean), ambiguousWith: ["329380", "381799"] },
+      { ...recordFor(clean), ambiguousCount: 2, ambiguousWith: ["329380", "381799"] },
       { now: NOW },
     );
 
@@ -271,6 +275,22 @@ describe("AMBIGUOUS_MC", () => {
     const reason = result.reasons.find((r) => r.code === "AMBIGUOUS_MC");
     expect(reason?.message).toContain("3 FMCSA entities");
     expect(reason?.message).toContain("286764");
+  });
+
+  it("flags on the count even when FMCSA gave us no DOT numbers to name", () => {
+    // Regression: the signal was derived from ambiguousWith, which Socrata
+    // leaves empty when the losing rows omit dot_number — so ambiguity vanished
+    // exactly when we knew least about who else holds this MC.
+    const result = evaluateCompliance(
+      { ...recordFor(clean), ambiguousCount: 3, ambiguousWith: [] },
+      { now: NOW },
+    );
+
+    expect(result.decision).toBe("flag");
+    expect(result.reasons.map((r) => r.code)).toContain("AMBIGUOUS_MC");
+    expect(result.reasons.find((r) => r.code === "AMBIGUOUS_MC")?.message).toContain(
+      "4 FMCSA entities",
+    );
   });
 
   it("does not flag when the MC is unique", () => {
@@ -298,11 +318,40 @@ describe("OOS_NOT_VERIFIED", () => {
     expect(result.reasons[0].severity).toBe("info");
   });
 
-  it("goes silent once a source can answer the question", () => {
+  it("goes silent once a source actually answers the question", () => {
     const record = recordFor({ ...clean, isOutOfService: false });
 
     expect(record.capabilities.outOfService).toBe(true);
     expect(evaluateCompliance(record, { now: NOW }).reasons).toEqual([]);
+  });
+
+  it("still fires when a capable source returned no answer", () => {
+    // Regression: the rule keyed off the capability bit, so a source that
+    // declares it CAN check OOS but omits the element — which QCMobile does
+    // whenever a value is empty — came back allow with zero reasons. The gate
+    // reported "checked and clean" about a question that got no answer.
+    const record = {
+      ...recordFor(clean),
+      source: "qcmobile" as const,
+      capabilities: { ...recordFor(clean).capabilities, outOfService: true },
+    };
+
+    const result = evaluateCompliance(record, { now: NOW });
+
+    expect(record.isOutOfService).toBeNull();
+    expect(record.capabilities.outOfService).toBe(true);
+    expect(result.reasons.map((r) => r.code)).toContain("OOS_NOT_VERIFIED");
+    expect(result.reasons.find((r) => r.code === "OOS_NOT_VERIFIED")?.message).toContain(
+      "came back empty",
+    );
+  });
+
+  it("says when for-hire registration could not be determined", () => {
+    const record = recordFor({ ...clean, authorizedForHire: null });
+    const result = evaluateCompliance(record, { now: NOW });
+
+    expect(result.decision).toBe("allow");
+    expect(result.reasons.map((r) => r.code)).toContain("FOR_HIRE_NOT_VERIFIED");
   });
 });
 

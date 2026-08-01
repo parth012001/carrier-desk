@@ -55,7 +55,9 @@ describe("SocrataCarrierSource.normalize — real recorded payloads", () => {
         powerUnits: true,
         priorRevocation: true,
         authorityGrantedAt: true,
+        authorizedForHire: true,
       },
+      ambiguousCount: 0,
       ambiguousWith: [],
     });
   });
@@ -190,6 +192,63 @@ describe("resolveCandidates — MC numbers are not unique", () => {
       resolveCandidates([{ ...tied[0], mcs150_date: "20240101 0000" }, tied[1]], "1")?.winner
         .dot_number,
     ).toBe("300");
+  });
+
+  it("prefers the active entity when the docket status ties", () => {
+    // Tiebreak level 2 was never the deciding comparison in any test — deleting
+    // it left the suite green.
+    const rows: SocrataRow[] = [
+      { dot_number: "100", docket1prefix: "MC", docket1: "1", docket1_status_code: "I", status_code: "I" },
+      { dot_number: "900", docket1prefix: "MC", docket1: "1", docket1_status_code: "I", status_code: "A" },
+    ];
+
+    expect(resolveCandidates(rows, "1")?.winner.dot_number).toBe("900");
+    expect(resolveCandidates([...rows].reverse(), "1")?.winner.dot_number).toBe("900");
+  });
+
+  it("stays total when the DOT tiebreak cannot separate two rows", () => {
+    // Regression: two rows with no parseable DOT compared as Infinity - Infinity
+    // = NaN, which the sort spec coerces to 0 — so the winner followed input
+    // order on the call that decides who gets booked.
+    const alpha: SocrataRow = {
+      legal_name: "ALPHA TRUCKING",
+      docket1prefix: "MC",
+      docket1: "1",
+      docket1_status_code: "A",
+      status_code: "A",
+    };
+    const bravo: SocrataRow = { ...alpha, legal_name: "BRAVO TRUCKING" };
+
+    expect(resolveCandidates([alpha, bravo], "1")?.winner.legal_name).toBe(
+      resolveCandidates([bravo, alpha], "1")?.winner.legal_name,
+    );
+
+    // Same when both carry an identical DOT number.
+    const withDots = [
+      { ...alpha, dot_number: "500" },
+      { ...bravo, dot_number: "500" },
+    ];
+    expect(resolveCandidates(withDots, "1")?.winner.legal_name).toBe(
+      resolveCandidates([...withDots].reverse(), "1")?.winner.legal_name,
+    );
+
+    // And when the name tiebreak ties too — same name, or no name at all, which
+    // is the same "Socrata omits empty fields" condition that started this.
+    const twins: SocrataRow[] = [
+      { ...alpha, dot_number: "111", phone: "1" },
+      { ...alpha, dot_number: "111", phone: "2" },
+    ];
+    expect(resolveCandidates(twins, "1")?.winner.phone).toBe(
+      resolveCandidates([...twins].reverse(), "1")?.winner.phone,
+    );
+
+    const nameless: SocrataRow[] = [
+      { docket1prefix: "MC", docket1: "1", docket1_status_code: "A", status_code: "A", phone: "111" },
+      { docket1prefix: "MC", docket1: "1", docket1_status_code: "A", status_code: "A", phone: "222" },
+    ];
+    expect(resolveCandidates(nameless, "1")?.winner.phone).toBe(
+      resolveCandidates([...nameless].reverse(), "1")?.winner.phone,
+    );
   });
 
   it("returns null for an empty candidate list", () => {

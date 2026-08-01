@@ -39,6 +39,7 @@ export type SourceCapabilities = {
   powerUnits: boolean;
   priorRevocation: boolean;
   authorityGrantedAt: boolean;
+  authorizedForHire: boolean;
 };
 
 /**
@@ -54,6 +55,7 @@ export const CAPABILITY_FIELDS = {
   powerUnits: "powerUnits",
   priorRevocation: "priorRevocation",
   authorityGrantedAt: "authorityGrantedAt",
+  authorizedForHire: "authorizedForHire",
 } as const satisfies Record<keyof SourceCapabilities, keyof CarrierRecord>;
 
 export type CarrierRecord = {
@@ -79,9 +81,19 @@ export type CarrierRecord = {
   source: SourceId;
   capabilities: SourceCapabilities;
   /**
-   * DOT numbers of other entities sharing this MC number. MC numbers are not
-   * unique in FMCSA data — MC-143229 maps to six distinct legal entities — so
-   * the losers of the resolution sort are carried here rather than discarded.
+   * How many OTHER entities share this MC number. MC numbers are not unique in
+   * FMCSA data — MC-143229 maps to six distinct legal entities.
+   *
+   * This is the ambiguity signal, not `ambiguousWith`. It is derived from the
+   * row count, so it holds even when the losing rows carry no DOT number —
+   * Socrata omits empty fields entirely, and keying the flag off `ambiguousWith`
+   * meant ambiguity silently disappeared exactly when we knew least about the
+   * other entities.
+   */
+  ambiguousCount: number;
+  /**
+   * DOT numbers of the other entities, where FMCSA gave us one. Best-effort
+   * identification for the human — never the trigger for a compliance rule.
    */
   ambiguousWith: string[];
 };

@@ -47,6 +47,7 @@ export const SOCRATA_CAPABILITIES: SourceCapabilities = {
   powerUnits: true,
   priorRevocation: true,
   authorityGrantedAt: true, // add_date
+  authorizedForHire: true, // classdef
 };
 
 /**
@@ -157,16 +158,17 @@ function toAuthorizedForHire(classdef: string | null): boolean | null {
  * MC numbers are not unique in this dataset: MC-143229 returns six rows across
  * two states, exactly one with active authority, and 1000+ MC values are
  * duplicated. `rows[0]` is nondeterministic on the path that decides whether to
- * book freight, so the ordering below is total — the DOT tiebreak guarantees no
- * two rows ever compare equal.
+ * book freight, so the ordering below is total: five levels ending in legal
+ * name, because DOT numbers can be missing or duplicated and a comparator that
+ * returns NaN silently falls back to input order.
  *
- * Returns the winner plus the DOT numbers of everyone else, which become an
- * AMBIGUOUS_MC flag rather than being silently dropped.
+ * Returns the winner, the count of everyone else (the ambiguity signal), and
+ * their DOT numbers where FMCSA gave us one (identification only).
  */
 export function resolveCandidates(
   rows: readonly SocrataRow[],
   mcNumber: string,
-): { winner: SocrataRow; others: string[] } | null {
+): { winner: SocrataRow; others: string[]; otherCount: number } | null {
   if (rows.length === 0) return null;
 
   const ranked = [...rows].sort((a, b) => {
@@ -184,16 +186,49 @@ export function resolveCandidates(
     const freshness = msSinceEpoch(b.mcs150_date) - msSinceEpoch(a.mcs150_date);
     if (freshness !== 0) return freshness;
 
-    // 4. Lowest DOT number. Total ordering; no ties remain.
-    return (parseIntOrNull(a.dot_number) ?? Infinity) - (parseIntOrNull(b.dot_number) ?? Infinity);
+    // 4. Lowest DOT number, missing DOTs last.
+    const dotA = parseIntOrNull(a.dot_number);
+    const dotB = parseIntOrNull(b.dot_number);
+    if (dotA !== dotB) {
+      return (dotA ?? Number.MAX_SAFE_INTEGER) - (dotB ?? Number.MAX_SAFE_INTEGER);
+    }
+
+    // 5. Legal name. Plain comparison, not localeCompare — the latter resolves
+    // its collation from the runtime environment, which is the wrong tool for a
+    // determinism guarantee.
+    const nameA = trimOrNull(a.legal_name) ?? "";
+    const nameB = trimOrNull(b.legal_name) ?? "";
+    if (nameA !== nameB) return nameA < nameB ? -1 : 1;
+
+    // 6. Canonical serialization, so the ordering is genuinely total. Levels 4
+    // and 5 both tie when the fields they read are absent — and "Socrata omits
+    // empty fields entirely" is the same condition that motivated this chain in
+    // the first place. Two rows that reach here and still tie are identical in
+    // every field we can see, so which one wins cannot matter.
+    const keyA = canonicalKey(a);
+    const keyB = canonicalKey(b);
+    return keyA < keyB ? -1 : keyA > keyB ? 1 : 0;
   });
 
   const [winner, ...rest] = ranked;
+  // otherCount is the ambiguity signal and comes from the row count. `others` is
+  // identification only — Socrata omits empty fields, so a losing row may carry
+  // no DOT number, and deriving the signal from this array made ambiguity vanish
+  // precisely when we knew least about the other entities.
   const others = rest
     .map((row) => trimOrNull(String(row.dot_number ?? "")))
     .filter((dot): dot is string => dot !== null);
 
-  return { winner, others };
+  return { winner, others, otherCount: rest.length };
+}
+
+/** Key-sorted serialization, so two equal-content rows compare equal regardless
+ *  of the order their keys arrived in. */
+function canonicalKey(row: SocrataRow): string {
+  const entries = Object.keys(row)
+    .sort()
+    .map((key) => [key, (row as Record<string, unknown>)[key]]);
+  return JSON.stringify(entries);
 }
 
 /** Lower sorts first. Active beats everything; unknown sorts last. */
@@ -299,7 +334,7 @@ export class SocrataCarrierSource implements CarrierDataSource {
     const resolved = resolveCandidates(parsed.data, mcNumber);
     if (resolved === null) return null;
 
-    const { winner, others } = resolved;
+    const { winner, others, otherCount } = resolved;
     const docket = matchingDocket(winner, mcNumber);
 
     return {
@@ -319,6 +354,7 @@ export class SocrataCarrierSource implements CarrierDataSource {
 
       source: this.id,
       capabilities: this.capabilities,
+      ambiguousCount: otherCount,
       ambiguousWith: others,
     };
   }

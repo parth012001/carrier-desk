@@ -208,6 +208,106 @@ describe("readThrough", () => {
     expect(errors.map(([stage]) => stage)).toEqual(["write"]);
   });
 
+  it("hits the cache when the caller passes a dirty MC number", async () => {
+    // Regression: readThrough read with the caller's raw string but wrote under
+    // the canonical one, so "MC-186800" — what a carrier actually says on the
+    // phone — missed forever and put a live government API call in the path of
+    // every real lookup.
+    const source = countingSource(foundResult);
+    const store = new InMemoryCacheStore();
+
+    await readThrough("186800", source, store, { now: NOW });
+
+    for (const dirty of ["MC-186800", "mc 186800", "  MC-00186800 ", "00186800"]) {
+      const result = await readThrough(dirty, source, store, { now: NOW });
+      expect(result.cached, `${dirty} should hit the cache`).toBe(true);
+    }
+
+    expect(source.calls).toBe(1);
+    expect(store.size).toBe(1);
+  });
+
+  it("rejects an unparseable MC before touching the store or the source", async () => {
+    const source = countingSource(foundResult);
+    const store = new InMemoryCacheStore();
+
+    const result = await readThrough("not-an-mc", source, store, { now: NOW });
+
+    expect(result.status).toBe("error");
+    expect(source.calls).toBe(0);
+    expect(store.size).toBe(0);
+  });
+
+  it("treats a future-dated entry as stale, not as fresh forever", async () => {
+    // Regression: the freshness check had no lower bound, so a negative age read
+    // as fresh indefinitely. Reachable because this machine's clock runs slow
+    // while a deployed instance writes to the same table.
+    const source = countingSource(foundResult);
+    const store = new InMemoryCacheStore();
+    await store.write({
+      mcNumber: "186800",
+      source: "socrata",
+      found: true,
+      payload: activeFixture,
+      fetchedAt: new Date(NOW.getTime() + 30 * 24 * 60 * 60 * 1000),
+    });
+
+    const result = await readThrough("186800", source, store, { now: NOW });
+
+    expect(result.cached).toBe(false);
+    expect(source.calls).toBe(1);
+  });
+
+  it("survives a store that returns fetchedAt as a string", async () => {
+    // CarrierCacheStore is a public interface; anything round-tripping through
+    // JSON hands back a string. The freshness check must not throw past the guard.
+    const source = countingSource(foundResult);
+    const errors: string[] = [];
+    const store = {
+      read: async () =>
+        ({
+          mcNumber: "186800",
+          source: "socrata",
+          found: true,
+          payload: activeFixture,
+          fetchedAt: NOW.toISOString(),
+        }) as never,
+      write: async () => {},
+    };
+
+    const result = await readThrough("186800", source, store, {
+      now: NOW,
+      onCacheError: (stage) => errors.push(stage),
+    });
+
+    expect(result.status).toBe("found");
+    // Reported as a replay failure, not a read failure — the store handed back a
+    // row just fine; it was unusable once we tried to age it.
+    expect(errors).toEqual(["replay"]);
+  });
+
+  it("labels a crash inside the source's normalize as replay, not as a DB fault", async () => {
+    // Folding replay into the read's catch sent whoever debugs a source bug
+    // straight to Neon.
+    const source = { ...countingSource(foundResult), normalize: () => {
+      throw new Error("source normalize blew up");
+    } };
+    const errors: string[] = [];
+    const store = new InMemoryCacheStore();
+    await store.write({
+      mcNumber: "186800", source: "socrata", found: true,
+      payload: activeFixture, fetchedAt: NOW,
+    });
+
+    const result = await readThrough("186800", source, store, {
+      now: NOW,
+      onCacheError: (stage) => errors.push(stage),
+    });
+
+    expect(errors).toEqual(["replay"]);
+    expect(result.cached).toBe(false);
+  });
+
   it("keys the cache by source as well as MC", async () => {
     const store = new InMemoryCacheStore();
     const socrata = countingSource(foundResult);

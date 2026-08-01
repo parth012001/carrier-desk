@@ -7,8 +7,8 @@ import socrataActive from "./__fixtures__/socrata/mc-186800.active.json";
 import qcActive from "./__fixtures__/qcmobile/dot-286764.active.derived.json";
 import qcBrokerOnly from "./__fixtures__/qcmobile/dot-286764.broker-only.derived.json";
 import qcOos from "./__fixtures__/qcmobile/dot-286764.oos.derived.json";
-import { evaluateCompliance } from "./compliance";
-import { QCMobileCarrierSource } from "./qcmobile";
+import { evaluateCompliance, evaluateLookup } from "./compliance";
+import { QCMobileCarrierSource, redactWebKey } from "./qcmobile";
 import { SocrataCarrierSource } from "./socrata";
 import { CAPABILITY_FIELDS, type CarrierRecord } from "./types";
 
@@ -136,6 +136,64 @@ describe("cross-source contract — the same carrier through both sources", () =
     }
   });
 
+  it("counts MC ambiguity the same way through either source", () => {
+    // Regression, and the sharpest example of why this file exists: QCMobile
+    // hardcoded ambiguousCount: 0 while its docket lookup silently kept only the
+    // first entity. The same multi-entity MC came back `flag [AMBIGUOUS_MC]`
+    // through Socrata and `allow []` through QCMobile — a wrong-allow produced
+    // purely by which source sat behind the interface.
+    const threeEntities = [
+      { docket1prefix: "MC", docket1: "1", docket1_status_code: "A", status_code: "A", legal_name: "ONE", dot_number: "1", classdef: "AUTHORIZED FOR HIRE" },
+      { docket1prefix: "MC", docket1: "1", docket1_status_code: "I", status_code: "A", legal_name: "TWO", dot_number: "2" },
+      { docket1prefix: "MC", docket1: "1", docket1_status_code: "I", status_code: "A", legal_name: "THREE", dot_number: "3" },
+    ];
+    const viaSocrata = socrata.normalize(threeEntities, "1")!;
+
+    const viaQcMobile = qcmobile.normalize(
+      {
+        carrier: { dotNumber: 1, legalName: "ONE", safetyRating: "S", totalPowerUnits: 5, outOfService: "N" },
+        authority: [{ commonAuthorityStatus: "A" }],
+        ambiguousCount: 2,
+      },
+      "1",
+    )!;
+
+    expect(viaSocrata.ambiguousCount).toBe(2);
+    expect(viaQcMobile.ambiguousCount).toBe(2);
+    expect(evaluateCompliance(viaQcMobile, { now: NOW }).decision).toBe(
+      evaluateCompliance(viaSocrata, { now: NOW }).decision,
+    );
+    expect(evaluateCompliance(viaQcMobile, { now: NOW }).reasons.map((r) => r.code)).toContain(
+      "AMBIGUOUS_MC",
+    );
+  });
+
+  it("carries the ambiguity count through a QCMobile docket list", async () => {
+    // The count has to come from the list the source actually received, and
+    // survive onto the cached envelope.
+    const source = new QCMobileCarrierSource({
+      webKey: "secret",
+      fetchImpl: async (input) =>
+        Response.json({
+          content: String(input).includes("/authority")
+            ? [{ commonAuthorityStatus: "A" }]
+            : [
+                { carrier: { dotNumber: 1, legalName: "ONE" } },
+                { carrier: { dotNumber: 2, legalName: "TWO" } },
+                { carrier: { dotNumber: 3, legalName: "THREE" } },
+              ],
+        }),
+    });
+
+    const result = await source.lookupByMc("1");
+
+    expect(result.status).toBe("found");
+    if (result.status !== "found") return;
+    expect(result.record.ambiguousCount).toBe(2);
+    // And the same after a cache replay off the stored envelope.
+    expect(source.normalize(result.raw, "1")?.ambiguousCount).toBe(2);
+  });
+
   it("changes only the OOS caveat between the two, not the outcome", () => {
     const socrataCodes = evaluateCompliance(fromSocrata!, { now: NOW }).reasons.map((r) => r.code);
     const qcCodes = evaluateCompliance(fromQcMobile!, { now: NOW }).reasons.map((r) => r.code);
@@ -230,6 +288,61 @@ describe("QCMobileCarrierSource construction and transport", () => {
     expect(result.status).toBe("error");
     if (result.status !== "error") return;
     expect(result.message).toContain("Webkey not found");
+  });
+
+  it("never lets the WebKey escape into an error message", async () => {
+    // Regression: transport errors quote the request URL, and the URL carries the
+    // key. That message reaches a ComplianceReason, which the agent reads aloud
+    // and which is persisted to run_events.
+    const source = new QCMobileCarrierSource({
+      webKey: "SUPERSECRET-WEBKEY-abc123",
+      fetchImpl: async (input) => {
+        throw new Error(`connect ECONNREFUSED ${String(input)}`);
+      },
+    });
+
+    const result = await source.lookupByMc("186800");
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.message).not.toContain("SUPERSECRET-WEBKEY-abc123");
+    expect(result.message).toContain("webKey=REDACTED");
+
+    // And the same string, once it reaches the gate.
+    const spoken = evaluateLookup(result, { now: NOW }).reasons[0].message;
+    expect(spoken).not.toContain("SUPERSECRET-WEBKEY-abc123");
+  });
+
+  it("walks the cause chain and still redacts — the shape Node's fetch throws", async () => {
+    // Node rejects with a bare "fetch failed" and hides the real reason in
+    // `cause`, where the URL (and therefore the key) also lives. Reading only
+    // .message meant the redactor had nothing to redact AND the operator lost
+    // the diagnostic.
+    const source = new QCMobileCarrierSource({
+      webKey: "SUPERSECRET-abc123",
+      fetchImpl: async (input) => {
+        throw new Error("fetch failed", {
+          cause: new Error(`connect ECONNREFUSED ${String(input)}`),
+        });
+      },
+    });
+
+    const result = await source.lookupByMc("186800");
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.message).not.toContain("SUPERSECRET-abc123");
+    expect(result.message).toContain("ECONNREFUSED");
+  });
+
+  it("redacts the key wherever it appears in a message", () => {
+    expect(redactWebKey("GET https://x/y?webKey=abc123 failed")).toBe(
+      "GET https://x/y?webKey=REDACTED failed",
+    );
+    expect(redactWebKey("https://x/y?a=1&webKey=abc123&b=2")).toBe(
+      "https://x/y?a=1&webKey=REDACTED&b=2",
+    );
+    expect(redactWebKey("nothing sensitive here")).toBe("nothing sensitive here");
   });
 
   it("returns not_found for an empty docket response", async () => {

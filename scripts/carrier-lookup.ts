@@ -5,6 +5,7 @@ import { neon } from "@neondatabase/serverless";
 import { drizzle } from "drizzle-orm/neon-http";
 
 import { DrizzleCacheStore } from "../src/lib/carriers/cache-drizzle";
+import { parseMcNumber } from "../src/lib/carriers/normalize";
 import { readThrough } from "../src/lib/carriers/cache";
 import { evaluateLookup } from "../src/lib/carriers/compliance";
 import { SocrataCarrierSource } from "../src/lib/carriers/socrata";
@@ -52,8 +53,11 @@ async function main() {
   const result = await readThrough(mcNumber, source, store, { forceRefresh });
   const elapsedMs = Date.now() - startedAt;
 
+  // Print the canonical number, not whatever was typed — "MC-MC-186800" reads
+  // like a bug even when the lookup is correct.
+  const label = parseMcNumber(mcNumber) ?? mcNumber;
   console.log(
-    `\nMC-${mcNumber} via ${source.id} — ${result.cached ? "cache hit" : "live"} in ${elapsedMs}ms`,
+    `\nMC-${label} via ${source.id} — ${result.cached ? "cache hit" : "live"} in ${elapsedMs}ms`,
   );
 
   if (result.status === "found") {
@@ -68,8 +72,9 @@ async function main() {
       `  authority granted ${r.authorityGrantedAt?.toISOString().slice(0, 10) ?? "unknown"} · ` +
         `out of service ${r.isOutOfService ?? "not verifiable by this source"}`,
     );
-    if (r.ambiguousWith.length > 0) {
-      console.log(`  also matches DOT ${r.ambiguousWith.join(", ")}`);
+    if (r.ambiguousCount > 0) {
+      const named = r.ambiguousWith.length > 0 ? r.ambiguousWith.join(", ") : "no DOT on file";
+      console.log(`  shares this MC with ${r.ambiguousCount} other entity(ies): ${named}`);
     }
   } else if (result.status === "not_found") {
     console.log("  no FMCSA record");

@@ -25,7 +25,8 @@ export type ComplianceCode =
   | "NO_POWER_UNITS"
   | "NEW_AUTHORITY"
   | "AMBIGUOUS_MC"
-  | "OOS_NOT_VERIFIED";
+  | "OOS_NOT_VERIFIED"
+  | "FOR_HIRE_NOT_VERIFIED";
 
 export type ComplianceDecision = "allow" | "flag" | "block";
 
@@ -135,21 +136,43 @@ export const RULES: readonly Rule[] = [
   {
     code: "AMBIGUOUS_MC",
     severity: "flag",
-    applies: (r) => r.ambiguousWith.length > 0,
+    // Keyed off the count, not off `ambiguousWith`. Socrata omits empty fields,
+    // so losing rows may carry no DOT number — and reading the signal off that
+    // array made the flag disappear on exactly the lookups where we knew least
+    // about who else holds this MC.
+    applies: (r) => r.ambiguousCount > 0,
     message: (r) =>
-      `MC-${r.mcNumber} resolves to ${r.ambiguousWith.length + 1} FMCSA entities. ` +
+      `MC-${r.mcNumber} resolves to ${r.ambiguousCount + 1} FMCSA entities. ` +
       `Proceeding with DOT ${r.dotNumber ?? "unknown"}; confirm which company is calling.`,
   },
   {
     code: "OOS_NOT_VERIFIED",
     severity: "info",
-    // Deliberately info, not flag. Every Socrata lookup would trip a flag here,
-    // which is noise — but omitting it entirely would overstate what the gate
-    // actually proved. It disappears on its own once QCMobile is wired in.
-    applies: (r) => r.capabilities.outOfService === false,
-    message: () =>
-      `Out-of-service status was not verified — the FMCSA census source does not ` +
-      `carry that field. Confirm via QCMobile before high-value freight.`,
+    // Keyed off the VALUE, not the capability bit. QCMobile declares it can
+    // answer this, but omits elements that have no value — so a real record can
+    // come back with the capability true and the answer still null. Reading the
+    // capability alone reported "checked and clean" about a question that got no
+    // answer, which is the failure docs/DECISIONS.md #10 exists to prevent.
+    //
+    // Deliberately info, not flag. Every Socrata lookup trips this, so a flag
+    // would be noise — but dropping it would overstate what the gate proved.
+    applies: (r) => r.isOutOfService === null,
+    message: (r) =>
+      r.capabilities.outOfService
+        ? `Out-of-service status came back empty from FMCSA — not confirmed clear.`
+        : `Out-of-service status was not verified — the FMCSA census source does not ` +
+          `carry that field. Confirm via QCMobile before high-value freight.`,
+  },
+  {
+    code: "FOR_HIRE_NOT_VERIFIED",
+    severity: "info",
+    // Same rule, applied to the other field that drives a block. A null here is
+    // "we never established it", not "they are registered for hire".
+    // Scoped to active authority on purpose. Every source returns null here for
+    // pending/inactive/none, which already block — adding an info line there is
+    // noise stacked on the demo's headline moment.
+    applies: (r) => r.authorizedForHire === null && r.authorityStatus === "active",
+    message: (r) => `For-hire registration for MC-${r.mcNumber} could not be determined.`,
   },
 ];
 

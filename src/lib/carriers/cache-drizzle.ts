@@ -33,7 +33,10 @@ export class DrizzleCacheStore implements CarrierCacheStore {
 
     return {
       mcNumber: row.mcNumber,
-      source: row.source as SourceId,
+      // The `source` column is plain text with no enum constraint, so casting
+      // row.source would assert a union the database does not enforce. The query
+      // already filtered on this exact value — return the one we know.
+      source,
       found: row.found,
       payload: row.payload,
       fetchedAt: row.fetchedAt,

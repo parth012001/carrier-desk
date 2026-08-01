@@ -34,6 +34,7 @@ export const QCMOBILE_CAPABILITIES: SourceCapabilities = {
   powerUnits: true,
   priorRevocation: false, // no prior-revocation flag in the QCMobile payload
   authorityGrantedAt: false, // no authority-grant date either — Socrata has it
+  authorizedForHire: true, // derived from the common/contract/broker split
 };
 
 /**
@@ -73,6 +74,14 @@ const authoritySchema = z.looseObject({
 const envelopeSchema = z.object({
   carrier: carrierSchema,
   authority: z.array(authoritySchema).default([]),
+  /**
+   * How many OTHER entities the docket lookup returned. Carried on the envelope
+   * (which is what gets cached) so a cache replay reports the same ambiguity as
+   * the live call. Hardcoding 0 here would assert "exactly one entity" about a
+   * list this source silently truncates — and would make the same MC come back
+   * `flag` through Socrata and `allow` through QCMobile.
+   */
+  ambiguousCount: z.number().int().nonnegative().default(0),
 });
 
 export type QCMobileEnvelope = z.output<typeof envelopeSchema>;
@@ -152,6 +161,19 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     this.baseUrl = options.baseUrl ?? BASE_URL;
   }
 
+  /**
+   * Splits on the actual key value, so no amount of URL-encoding, casing, or
+   * reformatting by an intermediate layer can smuggle it past. The pattern-based
+   * pass is belt and braces for keys we did not construct.
+   */
+  private redact(text: string): string {
+    let out = text;
+    for (const form of [this.webKey, encodeURIComponent(this.webKey)]) {
+      if (form) out = out.split(form).join("REDACTED");
+    }
+    return redactWebKey(out);
+  }
+
   private url(path: string): string {
     const url = new URL(`${this.baseUrl}${path}`);
     url.searchParams.set("webKey", this.webKey);
@@ -163,7 +185,12 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     try {
       response = await this.fetchImpl(this.url(path));
     } catch (cause) {
-      return { ok: false, message: cause instanceof Error ? cause.message : String(cause) };
+      // Node's fetch rejects with a bare "fetch failed" and puts the real reason
+      // in `cause`, so the chain has to be walked or the operator learns nothing.
+      // The URL — which carries the WebKey — shows up there too. This message
+      // ends up in a ComplianceReason, which the agent reads aloud and which is
+      // persisted to run_events, so it must never carry the credential.
+      return { ok: false, message: this.redact(describeError(cause)) };
     }
 
     const parsed = contentSchema.safeParse(await response.json().catch(() => null));
@@ -195,8 +222,9 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     const byDocket = await this.getContent(`/carriers/docket-number/${mcNumber}`);
     if (!byDocket.ok) return { status: "error", mcNumber, message: byDocket.message };
 
-    const carrier = firstCarrier(byDocket.content);
-    if (carrier === null) return { status: "not_found", mcNumber };
+    const selected = selectCarrier(byDocket.content);
+    if (selected === null) return { status: "not_found", mcNumber };
+    const { carrier, otherCount } = selected;
 
     const dotNumber = trimOrNull(String(carrier.dotNumber ?? ""));
     let authority: unknown[] = [];
@@ -206,7 +234,7 @@ export class QCMobileCarrierSource implements CarrierDataSource {
       authority = Array.isArray(result.content) ? result.content : [];
     }
 
-    const raw = { carrier, authority };
+    const raw = { carrier, authority, ambiguousCount: otherCount };
     const record = this.normalize(raw, mcNumber);
     if (record === null) return { status: "not_found", mcNumber };
 
@@ -249,25 +277,54 @@ export class QCMobileCarrierSource implements CarrierDataSource {
 
       source: this.id,
       capabilities: this.capabilities,
+      ambiguousCount: parsed.data.ambiguousCount,
+      // QCMobile's docket list carries no DOT for the entities it truncates, so
+      // there is nothing to name here. The count is the signal; see types.ts.
       ambiguousWith: [],
     };
   }
 }
 
-/** Docket lookups return a list; DOT lookups return one object. Accept both. */
-function firstCarrier(content: unknown): z.output<typeof carrierSchema> | null {
+/**
+ * Docket lookups return a list; DOT lookups return one object. Accept both.
+ *
+ * Returns the first usable carrier AND how many others the list held, because
+ * an MC mapping to several entities is a compliance signal, not a detail to
+ * drop on the floor.
+ */
+function selectCarrier(
+  content: unknown,
+): { carrier: z.output<typeof carrierSchema>; otherCount: number } | null {
   const items = Array.isArray(content) ? content : [content];
 
-  for (const item of items) {
-    const wrapped = z.looseObject({ carrier: z.unknown() }).safeParse(item);
-    const candidate = wrapped.success && wrapped.data.carrier ? wrapped.data.carrier : item;
-    const parsed = carrierSchema.safeParse(candidate);
-    if (parsed.success && (parsed.data.dotNumber !== undefined || parsed.data.legalName)) {
-      return parsed.data;
-    }
-  }
+  const parsed = items
+    .map((item) => {
+      const wrapped = z.looseObject({ carrier: z.unknown() }).safeParse(item);
+      const candidate = wrapped.success && wrapped.data.carrier ? wrapped.data.carrier : item;
+      return carrierSchema.safeParse(candidate);
+    })
+    .filter((r) => r.success && (r.data.dotNumber !== undefined || r.data.legalName))
+    .map((r) => r.data!);
 
-  return null;
+  if (parsed.length === 0) return null;
+  return { carrier: parsed[0], otherCount: parsed.length - 1 };
+}
+
+/**
+ * Strips the WebKey out of any string headed for a user-visible message.
+ * Exported so the test suite can assert the credential never escapes.
+ */
+export function redactWebKey(text: string): string {
+  return text
+    .replace(/([?&]webKey=)[^&\s"']+/gi, "$1REDACTED")
+    .replace(/(webKey%3D)[^&\s"']+/gi, "$1REDACTED");
+}
+
+/** Flattens an Error's cause chain — Node's fetch hides the real reason there. */
+function describeError(cause: unknown, depth = 0): string {
+  if (!(cause instanceof Error) || depth > 3) return String(cause);
+  const inner = (cause as { cause?: unknown }).cause;
+  return inner === undefined ? cause.message : `${cause.message}: ${describeError(inner, depth + 1)}`;
 }
 
 /** Fixtures carry a `_derivation` provenance key. It is not part of the payload. */

@@ -11,9 +11,23 @@ import { beforeAll } from "vitest";
 beforeAll(() => {
   globalThis.fetch = (input: RequestInfo | URL) => {
     throw new Error(
-      `Test made a real network request to ${String(input)}. ` +
+      `Test made a real network request to ${describeTarget(input)}. ` +
         `Tests must run offline — pass a fetchImpl stub or use a recorded fixture. ` +
         `See CLAUDE.md, "Testing bar".`,
     );
   };
 });
+
+/**
+ * Origin and path only. The query string is dropped because QCMobile carries its
+ * WebKey there and this message goes to terminal output and CI logs.
+ */
+function describeTarget(input: RequestInfo | URL): string {
+  const raw = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return raw;
+  }
+}

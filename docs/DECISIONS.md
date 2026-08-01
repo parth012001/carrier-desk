@@ -179,6 +179,57 @@ demo and wrong in production.
 
 ---
 
+### 13 — "Unverified" keys off the value, never off the capability bit
+**2026-08-01**
+
+Found by review. `OOS_NOT_VERIFIED` originally fired when
+`capabilities.outOfService === false`. But QCMobile *declares* it can answer that
+question and still omits the element whenever it has no value — its own schema
+comment says so. So a real record came back with the capability `true` and the
+answer `null`, and the gate returned **allow with zero reasons**: it reported
+"checked and clean" about a question that got no answer. Exactly the failure #10
+exists to prevent, reintroduced one level down.
+
+The rule now keys off `isOutOfService === null`. The capability bit only chooses
+the wording — "the census source has no such field" versus "came back empty from
+FMCSA". `FOR_HIRE_NOT_VERIFIED` applies the same rule to the other field that
+drives a block, scoped to active authority so it does not stack noise onto
+carriers that are already blocked.
+
+**The general rule, now written down:** a capability describes what a source
+*can* answer. It is never evidence about what it *did* answer. Only the value is
+evidence.
+
+---
+
+### 14 — The ambiguity signal is a count, not a list of names
+**2026-08-01**
+
+Found by review, and it was a live wrong-allow. `AMBIGUOUS_MC` fired on
+`ambiguousWith.length > 0`, where `ambiguousWith` holds the losing rows' DOT
+numbers — but Socrata omits empty fields entirely, so losers without a DOT
+silently vanished from that array and the flag never fired.
+
+The consequence is the worst in the system: `resolveCandidates` sorts
+active-authority-first, so the winner is the most permissive row available. With
+the flag gone, a carrier whose own authority is revoked, calling in with an MC
+shared with an active entity, came back **allow** — carrying the other company's
+name, DOT and phone, with nothing saying anything was ambiguous.
+
+`ambiguousCount` (derived from the row count) is now the trigger.
+`ambiguousWith` is best-effort identification for the human and never drives a
+rule. The distinction generalizes: **derive a signal from the fact, not from an
+optional field that describes the fact.**
+
+The first fix for this shipped the bug sideways — QCMobile hardcoded
+`ambiguousCount: 0` while its docket lookup silently kept only the first entity,
+so the same MC came back `flag` through Socrata and `allow` through QCMobile.
+Caught by an adversarial pass over the fix itself. `contract.test.ts` now asserts
+both sources count ambiguity identically, which is the assertion that would have
+caught it the first time.
+
+---
+
 ### 7 — Eval skeleton on Day 3, not Day 5
 **2026-08-01**
 
