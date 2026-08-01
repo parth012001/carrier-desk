@@ -500,3 +500,81 @@ describe("evaluateLookup — STALE_LOOKUP", () => {
     expect(RULES.map((r) => r.code)).not.toContain("STALE_LOOKUP");
   });
 });
+
+/**
+ * A caller whose claimed DOT does not match the DOT on their claimed MC is
+ * reading two identities off two different pieces of paper — the identity-theft
+ * shape of double-brokering. Like STALE_LOOKUP this is a fact about the lookup,
+ * not the carrier: the claim lives in the conversation, not the FMCSA record.
+ */
+describe("evaluateLookup — MC_DOT_MISMATCH", () => {
+  const record = () =>
+    recordFor({
+      authorityStatus: "active",
+      isOutOfService: false,
+      safetyRating: "satisfactory",
+      authorizedForHire: true,
+      powerUnits: 85,
+      priorRevocation: false,
+    });
+
+  it("flags a claimed DOT that disagrees with the registry", () => {
+    const result = evaluateLookup(
+      { status: "found", record: record(), raw: null },
+      { now: NOW, claimedDotNumber: "9999999" },
+    );
+
+    expect(result.decision).toBe("flag");
+    expect(result.reasons[0].code).toBe("MC_DOT_MISMATCH");
+    expect(result.reasons[0].message).toContain("9999999");
+    expect(result.reasons[0].message).toContain("286764");
+  });
+
+  it("says nothing when the claim agrees", () => {
+    for (const claimed of ["286764", " 286764 ", "DOT 286764", "0286764"]) {
+      const result = evaluateLookup(
+        { status: "found", record: record(), raw: null },
+        { now: NOW, claimedDotNumber: claimed },
+      );
+
+      expect(result.decision, claimed).toBe("allow");
+    }
+  });
+
+  it("treats an unreadable claim as no claim, not as a mismatch", () => {
+    // A caller mumbling is not evidence of fraud, and a flag on every garbled
+    // phone line is a flag everyone learns to ignore.
+    for (const claimed of ["", "   ", "no idea", null, undefined]) {
+      const result = evaluateLookup(
+        { status: "found", record: record(), raw: null },
+        { now: NOW, claimedDotNumber: claimed },
+      );
+
+      expect(result.decision, String(claimed)).toBe("allow");
+    }
+  });
+
+  it("says nothing when the registry itself has no DOT to compare against", () => {
+    const noDot = { ...record(), dotNumber: null };
+    const result = evaluateLookup(
+      { status: "found", record: noDot, raw: null },
+      { now: NOW, claimedDotNumber: "9999999" },
+    );
+
+    expect(result.reasons.map((r) => r.code)).not.toContain("MC_DOT_MISMATCH");
+  });
+
+  it("never downgrades a block", () => {
+    const revoked = { ...record(), authorityStatus: "inactive" as const };
+    const result = evaluateLookup(
+      { status: "found", record: revoked, raw: null },
+      { now: NOW, claimedDotNumber: "9999999" },
+    );
+
+    expect(result.decision).toBe("block");
+  });
+
+  it("is not a record-level rule either", () => {
+    expect(RULES.map((r) => r.code)).not.toContain("MC_DOT_MISMATCH");
+  });
+});

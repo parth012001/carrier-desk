@@ -27,7 +27,8 @@ export type ComplianceCode =
   | "AMBIGUOUS_MC"
   | "OOS_NOT_VERIFIED"
   | "FOR_HIRE_NOT_VERIFIED"
-  | "STALE_LOOKUP";
+  | "STALE_LOOKUP"
+  | "MC_DOT_MISMATCH";
 
 export type ComplianceDecision = "allow" | "flag" | "block";
 
@@ -219,7 +220,38 @@ export type EvaluateLookupOptions = {
    * straight through. Undefined on the happy path.
    */
   staleAgeMs?: number;
+  /**
+   * The DOT number the *caller* volunteered, digits only. Compared against the
+   * DOT the registry actually has for this MC.
+   */
+  claimedDotNumber?: string | null;
 };
+
+/**
+ * A caller whose claimed DOT does not match the DOT on their claimed MC is
+ * reading two identities off two different pieces of paper. That is the shape
+ * of a carrier reciting a legitimate company's MC while operating as someone
+ * else — the identity-theft variant of double-brokering, and one of the few
+ * fraud signals available before any freight moves.
+ *
+ * Like STALE_LOOKUP this is a fact about the *lookup*, not about the carrier:
+ * the claim lives in the conversation, not in the FMCSA record, so it cannot
+ * be a RULES entry without handing evaluateCompliance something a CarrierRecord
+ * does not have.
+ *
+ * Flag rather than block: transposed digits on a phone call are common, and the
+ * right response is a human asking which company is calling, not a hang-up.
+ */
+function mcDotMismatchReason(record: CarrierRecord, claimed: string): ComplianceReason {
+  return {
+    code: "MC_DOT_MISMATCH",
+    severity: "flag",
+    message:
+      `Caller gave DOT ${claimed}, but MC-${record.mcNumber} is registered to ` +
+      `DOT ${record.dotNumber ?? "no DOT on file"} (${record.legalName}). ` +
+      `Confirm which company is calling before tendering freight.`,
+  };
+}
 
 /**
  * Staleness is a property of the *lookup*, not of the carrier, so it lives here
@@ -266,8 +298,18 @@ export function evaluateLookup(
   switch (result.status) {
     case "found": {
       const base = evaluateCompliance(result.record, options);
-      if (stale.length === 0) return base;
-      const reasons = [...stale, ...base.reasons];
+
+      // Compared as digits, so "DOT 286764", " 0286764 " and "286764" all agree.
+      // A claim we cannot parse is not evidence of a mismatch — it is a caller
+      // mumbling — so it raises nothing.
+      const claimed = parseDigits(options.claimedDotNumber);
+      const mismatch =
+        claimed !== null && result.record.dotNumber !== null && claimed !== result.record.dotNumber
+          ? [mcDotMismatchReason(result.record, claimed)]
+          : [];
+
+      if (stale.length === 0 && mismatch.length === 0) return base;
+      const reasons = [...stale, ...mismatch, ...base.reasons];
       return { decision: decisionFor(reasons), reasons };
     }
     case "not_found": {
@@ -304,4 +346,11 @@ export function evaluateLookup(
 
 function mcNumberOf(result: LookupResult): string {
   return result.status === "found" ? result.record.mcNumber : result.mcNumber;
+}
+
+/** Digits only, leading zeros dropped. null when there is nothing numeric to read. */
+function parseDigits(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  const digits = raw.replace(/\D/g, "").replace(/^0+/, "");
+  return digits === "" ? null : digits;
 }
