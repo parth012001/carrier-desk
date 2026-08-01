@@ -41,6 +41,27 @@ export class CallState {
     return this.compliance.get(mcNumber) ?? null;
   }
 
+  /**
+   * Whether anyone on this call has passed the gate.
+   *
+   * Found by the Day 3 eval: the agent quoted a rate before verification came
+   * back, because the model interleaves lookup_carrier and get_load into one
+   * parallel step and the prompt's "verify first" is a suggestion about
+   * ordering, not a constraint on it. Booking was never at risk — book_load
+   * checks compliance independently — but quoting to an unverified caller
+   * hands a rate to someone who may be blocked.
+   *
+   * The fix belongs here rather than in the prompt for the same reason every
+   * other rule does: sequencing enforced by wording is sequencing the next
+   * model revision can reorder.
+   */
+  hasClearedCarrier(): boolean {
+    for (const result of this.compliance.values()) {
+      if (result.decision !== "block") return true;
+    }
+    return false;
+  }
+
   countersUsed(loadRef: string): number {
     return this.countersUsedByLoad.get(loadRef) ?? 0;
   }

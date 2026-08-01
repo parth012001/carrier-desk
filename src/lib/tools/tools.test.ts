@@ -166,8 +166,57 @@ describe("get_load", () => {
 });
 
 describe("counter_offer", () => {
-  it("opens at the anchor when the carrier has not named a number", async () => {
+  /** Every quote needs a cleared caller first — see the guard tests below. */
+  async function verified() {
     const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+    return h;
+  }
+
+  it("refuses to quote before the caller has been verified", async () => {
+    // Found by the Day 3 eval: the model interleaves lookup_carrier with other
+    // calls in one parallel step, so the prompt's "verify first" is a
+    // suggestion about ordering rather than a constraint on it. Booking was
+    // never at risk — book_load checks compliance independently — but quoting
+    // hands a rate to someone who might be blocked.
+    const h = makeHarness();
+
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+      action: string;
+      reason: string;
+    };
+
+    expect(result).toMatchObject({ action: "error", reason: "carrier_not_verified" });
+    expect(h.state.countersUsed(REF)).toBe(0);
+  });
+
+  it("refuses to quote to a blocked carrier", async () => {
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_BLOCKED });
+
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+      action: string;
+      reason: string;
+    };
+
+    expect(result).toMatchObject({ action: "error", reason: "carrier_not_verified" });
+  });
+
+  it("quotes to a flagged carrier, who is allowed to haul", async () => {
+    // Flag means "a human should know", not "refuse". Blocking here would
+    // stop the agent working with any carrier sharing a duplicated MC.
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED, claimed_dot: "9999999" });
+
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+      action: string;
+    };
+
+    expect(result.action).toBe("offer");
+  });
+
+  it("opens at the anchor when the carrier has not named a number", async () => {
+    const h = await verified();
     const load = h.loads.snapshot(REF)!;
 
     const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
@@ -182,7 +231,7 @@ describe("counter_offer", () => {
   });
 
   it("concedes upward across the allowed counters, then walks", async () => {
-    const h = makeHarness();
+    const h = await verified();
     const load = h.loads.snapshot(REF)!;
     const offers: number[] = [];
 
@@ -207,7 +256,7 @@ describe("counter_offer", () => {
   });
 
   it("takes the carrier's number when it is below what we were about to offer", async () => {
-    const h = makeHarness();
+    const h = await verified();
     const load = h.loads.snapshot(REF)!;
     const bargain = load.rateFloorCents - 10_000;
 
@@ -221,7 +270,7 @@ describe("counter_offer", () => {
 
   it("does not burn a counter on a walked-away turn", async () => {
     // There is nothing to consume: we did not say a number.
-    const h = makeHarness();
+    const h = await verified();
     for (let i = 0; i < MAX_COUNTERS; i++) {
       await callTool(h.tools, "counter_offer", { load_ref: REF });
     }
@@ -233,7 +282,7 @@ describe("counter_offer", () => {
   });
 
   it("counts counters per load, so a second load starts fresh", async () => {
-    const h = makeHarness();
+    const h = await verified();
     await callTool(h.tools, "counter_offer", { load_ref: REF });
     await callTool(h.tools, "counter_offer", { load_ref: REF });
 
@@ -245,7 +294,7 @@ describe("counter_offer", () => {
   });
 
   it("records every offer so policy can be proven afterwards", async () => {
-    const h = makeHarness();
+    const h = await verified();
     await callTool(h.tools, "counter_offer", { load_ref: REF, carrier_asked_cents: 999_999 });
 
     expect(h.negotiations.entries).toHaveLength(1);
@@ -258,7 +307,7 @@ describe("counter_offer", () => {
   });
 
   it("refuses to quote a load that is not on the board", async () => {
-    const h = makeHarness();
+    const h = await verified();
 
     const result = (await callTool(h.tools, "counter_offer", { load_ref: "LD-00000" })) as {
       action: string;

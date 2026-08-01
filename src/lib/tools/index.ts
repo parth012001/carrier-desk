@@ -157,6 +157,18 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
           ),
       }),
       execute: traced("counter_offer", async ({ load_ref, carrier_asked_cents }) => {
+        // No rate before verification. The prompt asks for this ordering, but
+        // the model interleaves lookup_carrier with other calls in a single
+        // parallel step, so asking is not enough — the Day 3 eval caught it
+        // quoting $2,286.96 before the gate had answered.
+        if (!state.hasClearedCarrier()) {
+          return {
+            action: "error" as const,
+            reason: "carrier_not_verified",
+            message: "Verify the caller with lookup_carrier before quoting any rate.",
+          };
+        }
+
         const load = await deps.loads.byRef(load_ref);
         if (load === null) return { action: "error" as const, reason: "load_not_found" };
         if (state.isBooked(load_ref)) {
