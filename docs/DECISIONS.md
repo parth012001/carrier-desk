@@ -334,6 +334,73 @@ serving stale silently (the gate would report "checked and clean" about a check 
 
 ---
 
+### 17 — The tool computes the counter; the model never names a rate
+**2026-08-01**
+
+#4 says negotiation policy lives in the tool layer. There are two ways to build that, and the
+difference matters more than it first looks:
+
+- **Model proposes, tool clamps.** The model sends `offer_cents`; the tool rejects anything
+  above ceiling. The invariant holds *by validation*.
+- **Tool computes.** The model reports only what the carrier asked for; the tool decides what
+  to say back. The invariant holds *by construction*.
+
+We build the second. Under the first, `offer_cents` is an argument a carrier can try to steer
+through the model, and every test on that path is a test that our validation is exhaustive.
+Under the second there is no argument to steer: the counter path has no channel through which
+a rate can be named, so exhaustiveness is not something we have to establish. `book_load`
+still validates, because booking is the one place a number legitimately arrives from the model.
+
+The current literature is the reason to prefer the structural version rather than trusting a
+well-tested check plus a careful prompt. Every prompt-level defense measured in 2026 work on
+tool-calling agents — sandwich defense, self-reflection directives, guard-model advisories — is
+inconsistent or actively counterproductive, with hijack rates above 80% on the best-performing
+backbone tested; one paper documents a guard model correctly flagging a malicious command whose
+advisory the main model then ignored, producing RCE anyway. The defense that holds is
+deterministic parameter validation at the tool boundary. Removing the parameter is strictly
+better than validating it.
+
+**The concession curve.** Offers are fixed fractions of the floor→ceiling head, `[0, 0.5, 0.75]`:
+
+| Round | Lands on |
+|---|---|
+| 1 | `floor` — the opening anchor |
+| 2 | **market**, exactly, for the seeded 0.86/1.14 ratios |
+| 3 | halfway between market and ceiling |
+| 4+ | walk away |
+
+Concessions shrink (+0.50 head, then +0.25). This is how the buying side actually negotiates:
+anchor low, manufacture the feel of movement while giving away less each time, and decide after
+two or three rounds instead of grinding. `MAX_COUNTERS = 3` comes from the same place — an agent
+that counters forever is one a carrier can simply wait out.
+
+The top fraction is **0.75, strictly below 1.0**, which is what makes the ceiling unreachable on
+this path rather than merely guarded.
+
+Three details that are easy to get wrong and are pinned by tests:
+
+1. **If the carrier asks for less than our scheduled offer, take their number.** Countering
+   upward to "our" number would donate margin for nothing. This is the only place a
+   carrier-supplied value becomes a rate, and it can only ever fire *below* our own offer.
+2. **Rejections carry a code and never a number.** `"above_ceiling"` is the whole answer;
+   "you're $47 over" would be an oracle the model could binary-search to recover the ceiling.
+3. **Untrustworthy bounds mean no negotiation at all.** A row with `ceiling < floor` makes the
+   head negative and inverts the schedule — a design that approaches the ceiling from below
+   would start walking away from it. A missing row walks away rather than throwing mid-call.
+
+**Mutation testing found a real hole here.** Every counter-cap test derived its expectations
+from `MAX_COUNTERS`, so adding a fourth counter moved the tests along with the code and all 88
+stayed green — tautology, not coverage. The schedule is now pinned to literals. The lesson
+generalizes: a test that computes its expectation from the thing under test proves nothing, and
+the only reliable way to find those is to break the code on purpose.
+
+**Rejected:** model proposes + clamp (a validated boundary where a removed parameter would do) ·
+a fixed dollar concession (does not scale across a board spanning 60 to 1440 miles) ·
+letting the model counter below the scheduled offer (real option, but it hands back
+discretion the structural argument exists to remove, for a margin gain we cannot measure yet).
+
+---
+
 ### 7 — Eval skeleton on Day 3, not Day 5
 **2026-08-01**
 
