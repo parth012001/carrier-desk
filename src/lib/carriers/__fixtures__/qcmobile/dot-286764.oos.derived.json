@@ -1,0 +1,34 @@
+{
+  "_derivation": {
+    "status": "DERIVED — NOT A REAL RECORDING",
+    "why": "No keyless FMCSA source reports out-of-service status. The Socrata census file has no such column among its 148, and QCMobile needs a WebKey we do not have. This fixture exists so the OUT_OF_SERVICE block path is written and tested today rather than the day the key arrives.",
+    "derivedFrom": "./dot-286764.active.derived.json — itself derived from the real Socrata record for GENERAL TRANSPORT INC, DOT 286764 / MC-186800",
+    "shapeSource": "https://mobile.fmcsa.dot.gov/QCDevsite/docs/apiElements — documented element names, not an observed response",
+    "mutations": [
+      "outOfService: N -> Y",
+      "outOfServiceDate: absent -> 06/14/2026",
+      "allowedToOperate: Y -> N"
+    ],
+    "note": "GENERAL TRANSPORT INC is a real, active, Satisfactory-rated carrier. It is NOT under an out-of-service order. This file is a hand-built test input and must never be presented as a finding about that company.",
+    "replaceWhen": "An FMCSA WebKey is obtained. Find a carrier genuinely under an OOS order, record it, and delete this file."
+  },
+  "carrier": {
+    "dotNumber": 286764,
+    "legalName": "GENERAL TRANSPORT INC",
+    "dbaName": null,
+    "telephone": "8006276055",
+    "statusCode": "A",
+    "safetyRating": "S",
+    "totalPowerUnits": 85,
+    "outOfService": "Y",
+    "outOfServiceDate": "06/14/2026",
+    "allowedToOperate": "N"
+  },
+  "authority": [
+    {
+      "commonAuthorityStatus": "A",
+      "contractAuthorityStatus": "I",
+      "brokerAuthorityStatus": "I"
+    }
+  ]
+}

@@ -16,17 +16,19 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [x] Neon connected, schema pushed, seed verified
 - [x] `/loads` board renders from the DB
 
-## Day 2 — Carrier data + compliance gate
-- [ ] Vitest set up, `pnpm test` wired
-- [ ] `CarrierDataSource` interface + normalized `CarrierRecord`
-- [ ] `SocrataCarrierSource` — no API key, works immediately
-- [ ] Response caching in Postgres (the demo cannot depend on a live gov API)
-- [ ] `evaluateCompliance()` → `{ decision: allow | flag | block, reasons[] }` — pure, no I/O
-- [ ] Real payloads recorded as offline fixtures: active · revoked · out-of-service ·
-      nonexistent MC. Record the chosen MC numbers in `STATE.md` for reproducibility.
-- [ ] **Regression suite green:** table-driven compliance tests, normalization tests against
-      recorded payloads, cache read-through test, cross-source contract test
-- [ ] `QCMobileCarrierSource` — swaps in behind the same interface when the WebKey lands
+## Day 2 — Carrier data + compliance gate ✅
+- [x] Vitest set up, `pnpm test` wired
+- [x] `CarrierDataSource` interface + normalized `CarrierRecord`
+- [x] `SocrataCarrierSource` — no API key, works immediately
+- [x] Response caching in Postgres (the demo cannot depend on a live gov API)
+- [x] `evaluateCompliance()` → `{ decision: allow | flag | block, reasons[] }` — pure, no I/O
+- [x] Real payloads recorded as offline fixtures: active · authority-inactive ·
+      unsatisfactory · no-equipment · ambiguous-MC · docket2 · nonexistent MC.
+      MC numbers recorded in `STATE.md`.
+- [x] **Regression suite green:** 156 tests, offline. 1620-case compliance product,
+      normalization against recorded payloads, cache read-through, cross-source contract
+- [x] `QCMobileCarrierSource` — written and contract-tested; only its network path waits
+      on the WebKey
 
 ## Day 3 — Agent core + eval skeleton
 - [ ] Headless tool-calling loop (Vercel AI SDK + Anthropic)
@@ -85,3 +87,5 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 |---|---|---|---|
 | 2026-08-01 | Eval skeleton moved Day 5 → Day 3 | Highest-value and least-familiar component was scheduled last, so any earlier slip threatened it with no runway. Walking skeleton early turns Day 5 into scaling work, which is compressible. | None — Day 3 absorbs it |
 | 2026-08-01 | Added `SocrataCarrierSource` alongside QCMobile | FMCSA WebKey needs a Login.gov account. Rather than block Day 2 on it, the keyless Socrata census API works immediately and QCMobile becomes an upgrade behind the same interface. | ~1h, buys full independence from the key |
+| 2026-08-01 | Out-of-service fixtures are **derived**, not recorded | No keyless FMCSA source reports OOS — the census file has no such column among its 148, and QCMobile 404s without a WebKey. Rather than leave the `OUT_OF_SERVICE` block path untested until the key lands, the QCMobile fixtures are hand-built from a real census record, named `*.derived.json`, and carry a `_derivation` key naming every mutated field. A test enforces the naming. See `DECISIONS.md` #10. | None — real recordings replace them when the key arrives, and the rule and its tests are already written |
+| 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |
