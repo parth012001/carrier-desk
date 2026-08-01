@@ -10,6 +10,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx src/db/seed.ts",
+    "fixture:record": "tsx scripts/record-fixture.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "eval": "tsx src/eval/run.ts"
