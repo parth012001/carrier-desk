@@ -165,6 +165,49 @@ describe("readThrough", () => {
     expect(result.status).toBe("found");
   });
 
+  it("survives a cache read failure by going to the source", async () => {
+    // Regression: a transient Neon connect timeout crashed the whole lookup
+    // during Day 2 live verification. The cache is an optimization — a database
+    // blip must never take down a carrier call.
+    const source = countingSource(foundResult);
+    const errors: [string, unknown][] = [];
+    const store = {
+      read: async () => {
+        throw new Error("ConnectTimeoutError");
+      },
+      write: async () => {},
+    };
+
+    const result = await readThrough("186800", source, store, {
+      now: NOW,
+      onCacheError: (stage, error) => errors.push([stage, error]),
+    });
+
+    expect(result.status).toBe("found");
+    expect(result.cached).toBe(false);
+    expect(source.calls).toBe(1);
+    expect(errors.map(([stage]) => stage)).toEqual(["read"]);
+  });
+
+  it("survives a cache write failure and still returns the lookup", async () => {
+    const source = countingSource(foundResult);
+    const errors: [string, unknown][] = [];
+    const store = {
+      read: async () => null,
+      write: async () => {
+        throw new Error("ConnectTimeoutError");
+      },
+    };
+
+    const result = await readThrough("186800", source, store, {
+      now: NOW,
+      onCacheError: (stage, error) => errors.push([stage, error]),
+    });
+
+    expect(result.status).toBe("found");
+    expect(errors.map(([stage]) => stage)).toEqual(["write"]);
+  });
+
   it("keys the cache by source as well as MC", async () => {
     const store = new InMemoryCacheStore();
     const socrata = countingSource(foundResult);

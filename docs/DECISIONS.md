@@ -105,6 +105,80 @@ interview would undercut every domain claim in the demo.
 
 ---
 
+### 10 — `isOutOfService` is three-valued, and sources declare what they can answer
+**2026-08-01**
+
+The Socrata Company Census File (`az4n-8mr2`) has 148 columns and none of them is
+out-of-service. Only QCMobile carries it, and QCMobile requires a WebKey — an unkeyed request
+404s with `{"content":"Must provide Webkey"}`.
+
+So `CarrierRecord.isOutOfService` is `boolean | null`, where **`null` means "this source
+cannot determine it," never "not out of service."** Every source also publishes
+`SourceCapabilities`, so the gate can tell *checked and clean* from *never checked*.
+
+Reporting an unanswerable question as `false` would let the compliance gate clear a carrier on
+a check it never performed. That is the exact shape of the worst bug this system can have.
+
+The visible consequence is `OOS_NOT_VERIFIED`, an **info**-severity reason on every Socrata
+lookup. Info and not flag deliberately: flagging 100% of lookups trains everyone to ignore
+flags, but dropping the caveat would overstate what the gate proved. It goes silent by itself
+the day QCMobile is wired in — which is the interface earning its keep, live, on stage.
+
+The same rule generalized: `CAPABILITY_FIELDS` maps each capability to the field it governs,
+and the cross-source contract test asserts mechanically that a `false` capability always pairs
+with a `null` value. Writing that test is what caught `authorityGrantedAt` diverging between
+the two sources with nothing declaring it.
+
+**Rejected:** dropping OOS until the WebKey lands (the block path would then be untested on
+the day it matters) · blocking on unknown OOS (blocks every carrier).
+
+---
+
+### 11 — MC numbers are not unique, and resolution is deterministic
+**2026-08-01**
+
+Discovered while querying live data, not from the docs. `MC-143229` returns **six rows** — six
+distinct legal entities across Michigan and Colorado sharing one docket number, exactly one
+with active authority. Over 1000 MC values are duplicated, some with two *active* rows.
+
+`rows[0]` is therefore nondeterministic on the path that decides whether to book freight: the
+same carrier could be allowed on one call and blocked on the next, depending only on what
+order Socrata happened to return rows in.
+
+`resolveCandidates()` sorts on active docket → active entity → freshest MCS-150 → lowest DOT.
+The DOT tiebreak makes the ordering **total**, so no two rows ever compare equal. A rotation
+test asserts the winner is identical for every input permutation.
+
+The losing DOT numbers are kept in `ambiguousWith` and become an `AMBIGUOUS_MC` **flag** rather
+than being discarded — MC reuse across entities is itself a chameleon-carrier signal, and the
+agent should ask which company is actually calling.
+
+Related: dockets live in `docket1`/`docket2`/`docket3`. 79k rows carry an MC in slot 2 and
+3.3k in slot 3, so the query ORs across all three. Reading only `docket1` would report
+COLONIAL CARTAGE — real, active, Satisfactory — as not found and block it.
+
+**Rejected:** blocking on any ambiguity (would block legitimate old carriers whose MC was
+reused decades ago) · resolving silently (discards a real fraud signal).
+
+---
+
+### 12 — An Unsatisfactory safety rating blocks; it does not warn
+**2026-08-01**
+
+Under 49 CFR 385.13, a motor carrier with a final "Unsatisfactory" rating is **prohibited from
+operating a commercial motor vehicle in interstate commerce**. It is a legal bar, not a
+preference, so the gate blocks even when operating authority still reads active — which is
+exactly the shape of MC-895642, WORLDWIDE TRANSPORT SOLUTIONS LLC.
+
+"Conditional" means safety management controls are inadequate but have not yet produced
+violations of the fitness standard. That is a `flag` for human review, not a block.
+
+This matters beyond correctness: brokers face negligent-selection liability for tendering
+freight to an Unsatisfactory carrier. Treating it as a soft warning would be wrong in the
+demo and wrong in production.
+
+---
+
 ### 7 — Eval skeleton on Day 3, not Day 5
 **2026-08-01**
 

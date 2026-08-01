@@ -6,59 +6,84 @@
 
 ## Where we are
 
-Branch: `main` · **Day 1 of 7 COMPLETE** · typecheck clean · `/loads` verified rendering
+Branch: `main` · **Day 2 of 7 COMPLETE** · `pnpm test` 156 green, offline · typecheck clean
 
-## Done — Day 1
+## Done — Day 2
 
-- [x] Next.js 16.2.12 + React 19 + TS + Tailwind 4, pnpm
-- [x] Deps: drizzle-orm 0.45, @neondatabase/serverless, zod 4, drizzle-kit, tsx, dotenv
-- [x] Context system (`CLAUDE.md`, `docs/PLAN.md`, `DECISIONS.md`, `docs/pitch/`, this file)
-- [x] Company-neutral — `src/` names no employer; pitch lives in `docs/pitch/<company>.md`
-- [x] Drizzle schema — 7 tables in `src/db/schema.ts`
-- [x] Neon connected (`carrier-desk` project), schema pushed, all indexes + FKs applied
-- [x] Seeded 40 real lanes. Verified: Laredo→Chicago $2,659 @ $1.93/mi;
-      Memphis→Dallas $1,053 @ $2.24/mi; board total $38,552
-- [x] `/loads` renders from the DB, 200 in ~230ms, `/` redirects to it
+- [x] Vitest 4.1.10 wired. `pnpm test` / `pnpm test:watch`. Config is `vitest.config.mts`
+      (`.ts` triggers a Vite forward-compat warning).
+- [x] `src/test/setup.ts` replaces global `fetch` with one that throws — "no network in
+      tests" is now mechanical, not a convention.
+- [x] `CarrierDataSource` + normalized `CarrierRecord` (`src/lib/carriers/types.ts`)
+- [x] `SocrataCarrierSource` — keyless, live, deterministic multi-row resolution
+- [x] `evaluateCompliance()` — pure, 11 rules, `allow | flag | block`
+- [x] Read-through cache + `DrizzleCacheStore` into `carrier_lookup_cache`
+- [x] `QCMobileCarrierSource` behind the same interface, fixture-driven until the WebKey lands
+- [x] Cross-source contract test: any field the two sources disagree on must be explained
+      by a declared capability
+- [x] Live verified end to end via `pnpm carrier:lookup <MC>`; 7 rows in `carrier_lookup_cache`
+
+## Fixture MC numbers — real, verified live 2026-08-01
+
+Recorded via `pnpm fixture:record <mc> <label>` into
+`src/lib/carriers/__fixtures__/socrata/`. **These are the demo carriers. Do not invent others.**
+
+| Case | MC | DOT | Entity | Decision |
+|---|---|---|---|---|
+| allow | **186800** | 286764 | GENERAL TRANSPORT INC, Akron OH — 85 units, Satisfactory | `allow` |
+| **block — the demo bad actor** | **1175378** | 2895176 | LB 168 INC, Yorba Linda CA | `block` AUTHORITY_NOT_ACTIVE + PRIOR_AUTHORITY_REVOCATION |
+| block — safety | **895642** | 2565220 | WORLDWIDE TRANSPORT SOLUTIONS LLC, Laredo TX | `block` SAFETY_RATING_UNSATISFACTORY |
+| flag — no equipment | **260679** | 588583 | MULDER INC, Prinsburg MN | `flag` NO_POWER_UNITS |
+| flag — ambiguous MC | **143229** | 6 entities | resolves to DOT 208293 | `flag` AMBIGUOUS_MC |
+| allow — MC in docket2 | **170995** | 351203 | COLONIAL CARTAGE CORPORATION | `allow` |
+| not found | **9999999** | — | — | `block` NOT_FOUND |
+
+**LB 168 INC is the demo carrier for contract beat #2.** Entity still Active, 55 trucks,
+authority Inactive, prior revocation on file — a company that looks alive and cannot legally
+take the load.
 
 ## Next command
 
-**Start Day 2 — carrier data + compliance gate.** Build in this order:
+**Start Day 3 — agent core + eval skeleton.** Per `PLAN.md`:
 
-1. `src/lib/carriers/types.ts` — the `CarrierDataSource` interface plus a normalized
-   `CarrierRecord` shape (mcNumber, dotNumber, legalName, dbaName, phone,
-   authorityStatus, isOutOfService, safetyRating, powerUnits). Both sources must
-   normalize into this; compliance logic never sees a raw provider payload.
-2. `src/lib/carriers/socrata.ts` — keyless. Socrata dataset `az4n-8mr2` on
-   `data.transportation.gov`. No auth needed; `SOCRATA_APP_TOKEN` only raises rate limits.
-3. `src/lib/carriers/cache.ts` — read-through cache into `carrier_lookup_cache`
-   (unique on `mc_number` + `source`). **The demo must never depend on a live gov API.**
-4. `src/lib/carriers/compliance.ts` — `evaluateCompliance(record): { decision, reasons[] }`
-   where decision is `allow | flag | block`. Pure function, no I/O, trivially unit-testable.
-5. Fixture set: a known-good active carrier, a revoked-authority carrier, an
-   out-of-service carrier, and a nonexistent MC. Pull these from **real** lookups and
-   record the MC numbers here in STATE so the demo is reproducible.
-
-`QCMobileCarrierSource` slots in behind the same interface once the FMCSA WebKey lands —
-it adds `/authority`, `/oos`, and `/basics`, which is a richer gate. Not blocking.
+1. Headless tool-calling loop (Vercel AI SDK + Anthropic). `ANTHROPIC_API_KEY` is still empty
+   in `.env.local` — **this is now blocking.**
+2. Tools: `lookup_carrier`, `get_load`, `check_compliance`, `counter_offer`, `book_load`,
+   `escalate_to_human`, `end_call`.
+   - `lookup_carrier` wraps `readThrough(mc, source, store)` and `evaluateLookup(result)` —
+     both already built and tested. It should also cross-check the DOT the caller *claims*
+     against `record.dotNumber`; an MC↔DOT mismatch is a known fraud technique and the
+     record already carries what's needed.
+3. Negotiation policy in the tool layer — floor/ceiling/max-counters in code, never the prompt.
+4. Full trace to `run_events`.
+5. Walking-skeleton eval: one persona, one judge call, one printed score. Ugly is fine.
 
 ## Blocked / open
 
-- Nothing blocking Day 2.
-- `ANTHROPIC_API_KEY` is still empty in `.env.local` — needed for **Day 3**, not Day 2.
-- FMCSA WebKey not yet obtained (Login.gov, ~5 min). Upgrade, not a dependency.
+- **`ANTHROPIC_API_KEY` is empty in `.env.local` — blocks Day 3.**
+- FMCSA WebKey not obtained (Login.gov, ~5 min). Not blocking: `QCMobileCarrierSource` is
+  written and contract-tested, only its network path is dark. When the key lands, record real
+  payloads, delete the three `*.derived.json` files, and `OUT_OF_SERVICE` goes live unchanged.
+- Not yet wired: looked-up carriers are not written into the `carriers` table. That belongs
+  to Day 3, when a `run` exists to attach them to.
 
 ## Notes for the next session
 
-- Two amendments logged in `PLAN.md`. **The eval skeleton is Day 3, not Day 5.**
-- Rate direction: we are the broker *buying* capacity. `booked <= ceiling` is the hard
-  invariant; floor is only the opening anchor. See `DECISIONS.md` #8.
-- Carriers are deliberately **not** seeded — every carrier in this system comes from a real
-  FMCSA lookup. Don't invent carrier identities; it defeats the entire thesis.
-- `drizzle.config.ts` and `src/db/seed.ts` both load `.env.local` explicitly.
-  Plain `dotenv/config` reads `.env` and will silently fail here.
-- `pnpm db:push` needs `--force` (config has `strict: true`), i.e. `pnpm exec drizzle-kit push --force`.
-- `pnpm` warns it skipped the esbuild build script. Benign — drizzle-kit 0.31.10 runs fine.
-- Next 16 bundled docs live in `node_modules/next/dist/docs/`. Server Component +
-  ORM-direct data fetching is confirmed correct for this version.
-- Machine clock runs ~2.5 days slow, so seeded pickup dates are relative to that. Harmless
-  and self-consistent; don't "fix" it.
+- **`docket1_status_code` is the authority signal, not `status_code`.** They disagree
+  constantly. Getting this backwards would clear LB 168 INC.
+- **MC numbers are not unique.** 1000+ are duplicated. `resolveCandidates()` sorts on active
+  docket → active entity → freshest MCS-150 → lowest DOT. Never index into `rows[0]`.
+- **Every Socrata numeric column is `text` and SoQL compares it lexically** —
+  `power_units < '100'` is false for `'20'`. Never filter numerically in the query.
+- **Cargo columns use `"X"`, not `"Y"`.** `parseYesNo` deliberately rejects `"X"`.
+- Socrata: not-found is `[]` with **HTTP 200**; a bad query is **HTTP 400**. Different
+  outcomes, different handling — see `LookupResult`.
+- Neon intermittently exceeds undici's connect timeout from this machine. `readThrough`
+  now degrades to a live lookup on cache failure rather than crashing; regression tests cover
+  both read and write failure. If `pnpm carrier:lookup` errors, just retry.
+- Compliance takes an injected `now`. Never let it read the system clock in a test — this
+  machine's clock runs ~2.5 days slow.
+- `pnpm db:push` needs `--force` (config has `strict: true`).
+- `drizzle.config.ts`, `src/db/seed.ts`, and both `scripts/*.ts` load `.env.local` explicitly.
+  Plain `dotenv/config` reads `.env` and silently fails here.
+- Carriers are still deliberately **not** seeded. Every carrier comes from a real FMCSA lookup.

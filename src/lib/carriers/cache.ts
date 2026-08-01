@@ -31,6 +31,8 @@ export type ReadThroughOptions = {
   now?: Date;
   /** Skip the cache read but still write the result. Used by the refresh path. */
   forceRefresh?: boolean;
+  /** Called when the store misbehaves. Defaults to console.warn. */
+  onCacheError?: (stage: "read" | "write", error: unknown) => void;
 };
 
 /**
@@ -49,9 +51,22 @@ export async function readThrough(
 ): Promise<LookupResult & { cached: boolean }> {
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const now = options.now ?? new Date();
+  const onCacheError =
+    options.onCacheError ??
+    ((stage, error) => console.warn(`[carrier-cache] ${stage} failed, continuing:`, error));
 
   if (!options.forceRefresh) {
-    const hit = await store.read(mcNumber, source.id);
+    // The cache is an optimization. A database blip must never take down a
+    // carrier call — degrade to a live lookup instead. Caught for real: Neon
+    // intermittently exceeded undici's connect timeout during Day 2
+    // verification and crashed the whole lookup.
+    let hit: CachedLookup | null = null;
+    try {
+      hit = await store.read(mcNumber, source.id);
+    } catch (error) {
+      onCacheError("read", error);
+    }
+
     if (hit !== null && now.getTime() - hit.fetchedAt.getTime() < ttlMs) {
       const replayed = replay(hit, source);
       if (replayed !== null) return { ...replayed, cached: true };
@@ -63,22 +78,27 @@ export async function readThrough(
 
   const result = await source.lookupByMc(mcNumber);
 
-  if (result.status === "found") {
-    await store.write({
-      mcNumber: result.record.mcNumber,
-      source: source.id,
-      found: true,
-      payload: result.raw,
-      fetchedAt: now,
-    });
-  } else if (result.status === "not_found") {
-    await store.write({
-      mcNumber: result.mcNumber,
-      source: source.id,
-      found: false,
-      payload: null,
-      fetchedAt: now,
-    });
+  const entry: CachedLookup | null =
+    result.status === "found"
+      ? {
+          mcNumber: result.record.mcNumber,
+          source: source.id,
+          found: true,
+          payload: result.raw,
+          fetchedAt: now,
+        }
+      : result.status === "not_found"
+        ? { mcNumber: result.mcNumber, source: source.id, found: false, payload: null, fetchedAt: now }
+        : null;
+
+  if (entry !== null) {
+    // Likewise on the way out: failing to persist costs us a cache hit next
+    // time, nothing more. It must not turn a good lookup into an error.
+    try {
+      await store.write(entry);
+    } catch (error) {
+      onCacheError("write", error);
+    }
   }
 
   return { ...result, cached: false };

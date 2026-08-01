@@ -39,6 +39,9 @@ pnpm db:seed          # seed loads + carriers
 pnpm db:studio        # drizzle studio
 pnpm test             # regression suite — must be green before any commit
 pnpm eval             # run the adversarial eval suite, print scorecard
+
+pnpm carrier:lookup <MC> [--refresh]   # live FMCSA lookup + compliance, through the cache
+pnpm fixture:record <MC> <label>       # record a real Socrata payload as an offline fixture
 ```
 
 > `pnpm db:push` needs `--force` (config sets `strict: true`):
@@ -57,6 +60,10 @@ pnpm eval             # run the adversarial eval suite, print scorecard
 - **Carrier lookup goes through the `CarrierDataSource` interface.** Two implementations:
   Socrata (no key) and QCMobile (richer, needs a WebKey). Compliance logic must not know
   which one is behind it.
+- **A source must declare what it cannot answer.** A field the source can't see is `null`
+  *and* its `SourceCapabilities` entry is `false` — never a defaulted `false`/`0`. The gate
+  has to be able to tell *checked and clean* from *never checked*; anything else silently
+  clears carriers on questions nobody asked. See `DECISIONS.md` #10.
 - **Every agent run writes a full trace** to `run_events` — one row per tool call with args,
   result, and duration. Observability is a feature of the demo, not a debug aid.
 - **The agent core is headless.** Conversation policy is separate from transport, so the eval
