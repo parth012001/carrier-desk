@@ -7,14 +7,14 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 
 ---
 
-## Day 1 — Foundation
+## Day 1 — Foundation ✅
 - [x] Scaffold Next.js 16 + TS + Tailwind 4
 - [x] Install Drizzle, Neon, Zod, tsx
 - [x] Context system (`CLAUDE.md` + `docs/`)
-- [ ] Drizzle schema: `loads`, `carriers`, `runs`, `run_events`, `negotiations`, `eval_results`
-- [ ] Seed 40 realistic loads on real lanes, each with floor / ceiling / market rate
-- [ ] Neon connected, schema pushed, seed verified
-- [ ] `/loads` board renders from the DB
+- [x] Drizzle schema: `loads`, `carriers`, `runs`, `run_events`, `negotiations`, `eval_results`
+- [x] Seed 40 realistic loads on real lanes, each with floor / ceiling / market rate
+- [x] Neon connected, schema pushed, seed verified
+- [x] `/loads` board renders from the DB
 
 ## Day 2 — Carrier data + compliance gate
 - [ ] `CarrierDataSource` interface
