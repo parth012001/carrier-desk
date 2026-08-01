@@ -12,7 +12,8 @@ Branch: `main` · Day 1 of 7 · typecheck clean · **blocked on `DATABASE_URL`**
 
 - [x] Next.js 16.2.12 + React 19 + TS + Tailwind 4, pnpm
 - [x] Deps: drizzle-orm 0.45, @neondatabase/serverless, zod 4, drizzle-kit, tsx, dotenv
-- [x] Context system (`CLAUDE.md`, `docs/PLAN.md`, `DECISIONS.md`, `INTERVIEW.md`, this file)
+- [x] Context system (`CLAUDE.md`, `docs/PLAN.md`, `DECISIONS.md`, `docs/pitch/`, this file)
+- [x] Made company-neutral — `src/` names no employer; pitch lives in `docs/pitch/<company>.md`
 - [x] Drizzle schema — 7 tables in `src/db/schema.ts`
 - [x] `src/db/index.ts` (neon-http client), `drizzle.config.ts`, `.env.example`
 - [x] Seed script — 40 real lanes in `src/db/seed.ts`

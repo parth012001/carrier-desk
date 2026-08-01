@@ -8,6 +8,10 @@ A carrier calls in about a load. The agent verifies their operating authority ag
 FMCSA data, blocks bad actors, presents the load, negotiates the rate within policy, books it,
 and writes everything back — building a carrier profile that makes the next call better.
 
+**The product is company-neutral. Nothing in `src/` should ever name a company.** Per-company
+framing — demo script, talking points, their metrics — lives in `docs/pitch/<company>.md` and
+is swappable. This is a portfolio piece shown to multiple employers, not a demo for one.
+
 ## Demo contract — this is what must work, live, at the end
 
 1. Take a carrier conversation end to end and book a load
@@ -64,7 +68,7 @@ pnpm eval             # run the adversarial eval suite, print scorecard
 | `docs/PLAN.md` | The 7-day plan, kill order, and amendment log |
 | `docs/STATE.md` | **Read this second, every session.** Where we are, what's next |
 | `docs/DECISIONS.md` | Decisions and their *why*. Append-only. Don't re-litigate these. |
-| `docs/INTERVIEW.md` | Demo script and talking points, collected as they happen |
+| `docs/pitch/<company>.md` | Per-company demo script and talking points. One file per employer. |
 
 ## Session protocol
 
@@ -72,7 +76,7 @@ pnpm eval             # run the adversarial eval suite, print scorecard
 - **During:** commit at each checkpoint. Code and docs go in the *same* commit so they
   can never drift.
 - **End:** stop at a green checkpoint, not when context runs out. Update `STATE.md`,
-  append to `DECISIONS.md` and `INTERVIEW.md`, commit, then clear.
+  append to `DECISIONS.md` and the active `docs/pitch/*.md`, commit, then clear.
 
 If the plan changes, that is expected — log it in the Amendments table in `docs/PLAN.md`
 with the reason. Changing the plan is fine. Changing it silently is not.

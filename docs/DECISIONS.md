@@ -69,6 +69,23 @@ columns are `*_cents` integers.
 
 ---
 
+### 9 — The product is company-neutral; the pitch is swappable
+**2026-08-01**
+
+This is a portfolio piece that will be shown to multiple employers, not a demo for one.
+Nothing under `src/` names a company. Per-company framing lives in `docs/pitch/<company>.md`.
+
+The freight domain stays fixed — specificity is what makes it credible, and "I built a real
+carrier sales desk" travels better than a generic agent demo. What changes per employer is
+the framing: which of the design decisions to lead with, which of their metrics to cite,
+what to ask them.
+
+The two portable claims, which work for any applied-AI-agent role: **policy enforced in the
+tool layer rather than the prompt**, and **an adversarial eval harness with a real before/after
+delta**. Everything else is supporting detail.
+
+---
+
 ### 8 — Rate policy runs broker-side: the ceiling is the hard constraint
 **2026-08-01**
 
