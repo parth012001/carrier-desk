@@ -270,6 +270,70 @@ caught it the first time.
 
 ---
 
+### 16 — A 6s outbound budget, and bounded staleness when it runs out
+**2026-08-01**
+
+Three reviewers flagged the same hole on Day 2: no outbound `fetch` carried an `AbortSignal`,
+so Node's undici default applied. That is roughly **300 seconds** — five minutes of a driver
+holding a phone while a government API decides nothing. Day 3 wraps these calls in a tool on a
+live carrier call, so it gets fixed here.
+
+**The budget is 6s.** Day 2 live verification put a working Socrata query well under 2s, so
+the budget is generous against the happy path and still inside what a human tolerates.
+`DEFAULT_FETCH_TIMEOUT_MS` has a test pinning it to the 5–8s band: raising it should be a
+deliberate edit with a failing test attached, not a quiet drift back toward 300s.
+
+**QCMobile shares one deadline across both of its legs.** It makes two sequential calls, so a
+per-call budget would give the richer source double the worst case of the keyless one — which
+is backwards. The test asserts *signal identity* across the two calls rather than wall-clock
+timing: one signal object created once at the start of the lookup is a complete proof of the
+property and cannot flake.
+
+**On timeout, the question is what to serve.** Failing closed means `LOOKUP_FAILED`, which
+blocks the carrier and escalates — safe, but it also means one slow government API ends the
+call, and the demo, on stage. Serving whatever is cached means a decision made on data of
+unbounded age. Neither is right at the extremes, so the rule has two thresholds:
+
+| Cache age | Behaviour |
+|---|---|
+| ≤ 24h (TTL) | fresh — the cache *is* the answer, no reason raised |
+| 24h – 7d | served, with a `STALE_LOOKUP` **flag** carrying the age |
+| > 7d | refused — `LOOKUP_FAILED`, block, escalate |
+
+The TTL governs the happy path; the 7-day cap governs the degraded one. An FMCSA record from
+last Tuesday is a far better basis for a compliance decision than no record at all, and
+authority status does not usually turn over inside a week. Past the cap, "what we last saw"
+has stopped being evidence about what is true now.
+
+Four constraints fell out of the existing decisions and are worth writing down:
+
+1. **The fallback fires on `error` only, never on `not_found`.** A `not_found` is a real answer
+   from a reachable API. Overriding it with an older record would resurrect a carrier the
+   registry says does not exist — and `LookupResult` exists (#5) precisely to keep "no such
+   carrier" and "the API is down" from collapsing into each other.
+2. **`STALE_LOOKUP` lives in `evaluateLookup`, not in `RULES`.** Staleness is a property of the
+   lookup, not of the carrier. Putting it in `RULES` would hand `evaluateCompliance` — the one
+   deliberately pure function in this system — a fact that does not exist on a `CarrierRecord`,
+   and would drag a clock and a cache into it. A test asserts it is absent from `RULES`.
+3. **Severity is `flag`, not `info`.** The contrast with `OOS_NOT_VERIFIED` (#10) is the whole
+   argument: that one is `info` because it fires on 100% of Socrata lookups, and a flag on
+   everything trains everyone to ignore flags. This one fires only when a government API
+   actually failed to answer. It is rare, so it should be loud.
+4. **A fallback that lands inside the TTL is not flagged.** Reachable via `--refresh`: the
+   forced live call fails and the skipped entry turns out to be an hour old. That data is
+   current. Flagging it stale would be a small lie in a reason string the agent reads aloud.
+
+Timeout messages are also distinguished from failure messages — "did not respond within 6000ms"
+versus "request failed" — because they send whoever debugs them at different systems. And the
+response *body* is covered by the same deadline: `.json().catch(() => null)` used to swallow the
+abort and report a timeout as "unrecognised payload", blaming our parser for the network.
+
+**Rejected:** failing closed with no fallback (one slow API ends the call) · unbounded staleness
+(a decision on data of any age, which is the shape of every bug #10 and #13 exist to prevent) ·
+serving stale silently (the gate would report "checked and clean" about a check that timed out).
+
+---
+
 ### 7 — Eval skeleton on Day 3, not Day 5
 **2026-08-01**
 

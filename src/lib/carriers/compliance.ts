@@ -26,7 +26,8 @@ export type ComplianceCode =
   | "NEW_AUTHORITY"
   | "AMBIGUOUS_MC"
   | "OOS_NOT_VERIFIED"
-  | "FOR_HIRE_NOT_VERIFIED";
+  | "FOR_HIRE_NOT_VERIFIED"
+  | "STALE_LOOKUP";
 
 export type ComplianceDecision = "allow" | "flag" | "block";
 
@@ -183,6 +184,12 @@ const DECISION_BY_RANK: Record<number, ComplianceDecision> = {
   2: "block",
 };
 
+/** The decision is always the highest severity present. Never anything else. */
+function decisionFor(reasons: readonly ComplianceReason[]): ComplianceDecision {
+  const rank = reasons.reduce((max, reason) => Math.max(max, SEVERITY_RANK[reason.severity]), 0);
+  return DECISION_BY_RANK[rank];
+}
+
 /**
  * Decide whether a carrier may be booked.
  *
@@ -201,9 +208,39 @@ export function evaluateCompliance(
     message: rule.message(record),
   }));
 
-  const rank = reasons.reduce((max, reason) => Math.max(max, SEVERITY_RANK[reason.severity]), 0);
+  return { decision: decisionFor(reasons), reasons };
+}
 
-  return { decision: DECISION_BY_RANK[rank], reasons };
+export type EvaluateLookupOptions = {
+  now?: Date;
+  /**
+   * Age of the served payload when the live lookup failed and a past-TTL cache
+   * entry was used instead — i.e. `ReadThroughResult.staleAgeMs`, passed
+   * straight through. Undefined on the happy path.
+   */
+  staleAgeMs?: number;
+};
+
+/**
+ * Staleness is a property of the *lookup*, not of the carrier, so it lives here
+ * rather than in RULES. Putting it in RULES would mean `evaluateCompliance`
+ * needs a fact that does not exist on a CarrierRecord, and would drag a clock
+ * and a cache into the one function in this system that is deliberately pure.
+ *
+ * Severity is **flag**, and the contrast with OOS_NOT_VERIFIED is the argument:
+ * that one is info because it fires on every single Socrata lookup, and a flag
+ * on everything trains everyone to ignore flags. This one fires only when a
+ * government API actually failed to answer, which is rare and worth hearing.
+ */
+function staleReason(mcNumber: string, staleAgeMs: number): ComplianceReason {
+  const hours = Math.round(staleAgeMs / (60 * 60 * 1000));
+  return {
+    code: "STALE_LOOKUP",
+    severity: "flag",
+    message:
+      `The live FMCSA lookup for MC-${mcNumber} failed, so this decision was made on a ` +
+      `cached record roughly ${hours}h old. Re-verify before high-value freight.`,
+  };
 }
 
 /**
@@ -215,36 +252,56 @@ export function evaluateCompliance(
  */
 export function evaluateLookup(
   result: LookupResult,
-  options: { now?: Date } = {},
+  options: EvaluateLookupOptions = {},
 ): ComplianceResult {
+  // Prepended, not appended. RULES order puts blockers first so reasons read
+  // worst-first, but staleness is a caveat about the whole lookup — whoever
+  // reads this should know the data is old *before* they read anything
+  // concluded from it.
+  const stale =
+    options.staleAgeMs !== undefined && options.staleAgeMs > 0
+      ? [staleReason(mcNumberOf(result), options.staleAgeMs)]
+      : [];
+
   switch (result.status) {
-    case "found":
-      return evaluateCompliance(result.record, options);
-    case "not_found":
-      return {
-        decision: "block",
-        reasons: [
-          {
-            code: "NOT_FOUND",
-            severity: "block",
-            message:
-              `No FMCSA record exists for MC-${result.mcNumber}. ` +
-              `Nothing about this carrier can be verified.`,
-          },
-        ],
-      };
-    case "error":
-      return {
-        decision: "block",
-        reasons: [
-          {
-            code: "LOOKUP_FAILED",
-            severity: "block",
-            message:
-              `FMCSA lookup for MC-${result.mcNumber} failed: ${result.message}. ` +
-              `Cannot verify this carrier — escalate to a human rather than booking.`,
-          },
-        ],
-      };
+    case "found": {
+      const base = evaluateCompliance(result.record, options);
+      if (stale.length === 0) return base;
+      const reasons = [...stale, ...base.reasons];
+      return { decision: decisionFor(reasons), reasons };
+    }
+    case "not_found": {
+      const reasons: ComplianceReason[] = [
+        ...stale,
+        {
+          code: "NOT_FOUND",
+          severity: "block",
+          message:
+            `No FMCSA record exists for MC-${result.mcNumber}. ` +
+            `Nothing about this carrier can be verified.`,
+        },
+      ];
+      return { decision: decisionFor(reasons), reasons };
+    }
+    case "error": {
+      // Reaching here means the stale fallback found nothing usable either —
+      // no cache entry, or one past the fallback cap. Both mean we know
+      // nothing current about this carrier.
+      const reasons: ComplianceReason[] = [
+        ...stale,
+        {
+          code: "LOOKUP_FAILED",
+          severity: "block",
+          message:
+            `FMCSA lookup for MC-${result.mcNumber} failed: ${result.message}. ` +
+            `Cannot verify this carrier — escalate to a human rather than booking.`,
+        },
+      ];
+      return { decision: decisionFor(reasons), reasons };
+    }
   }
+}
+
+function mcNumberOf(result: LookupResult): string {
+  return result.status === "found" ? result.record.mcNumber : result.mcNumber;
 }

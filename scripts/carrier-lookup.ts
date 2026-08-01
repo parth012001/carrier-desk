@@ -56,9 +56,16 @@ async function main() {
   // Print the canonical number, not whatever was typed — "MC-MC-186800" reads
   // like a bug even when the lookup is correct.
   const label = parseMcNumber(mcNumber) ?? mcNumber;
-  console.log(
-    `\nMC-${label} via ${source.id} — ${result.cached ? "cache hit" : "live"} in ${elapsedMs}ms`,
-  );
+  // A stale hit is a third outcome, not a variety of cache hit: it means the
+  // live call failed and we fell back. Printing it as a plain "cache hit" would
+  // hide the degraded path exactly when someone is watching for it.
+  const path =
+    result.staleAgeMs !== undefined
+      ? `\x1b[33mSTALE cache hit (${Math.round(result.staleAgeMs / 3_600_000)}h old, live lookup failed)\x1b[0m`
+      : result.cached
+        ? "cache hit"
+        : "live";
+  console.log(`\nMC-${label} via ${source.id} — ${path} in ${elapsedMs}ms`);
 
   if (result.status === "found") {
     const r = result.record;
@@ -82,7 +89,7 @@ async function main() {
     console.log(`  lookup failed: ${result.message}`);
   }
 
-  const compliance = evaluateLookup(result);
+  const compliance = evaluateLookup(result, { staleAgeMs: result.staleAgeMs });
   console.log(`\n  ${DECISION_STYLE[compliance.decision]}`);
   for (const reason of compliance.reasons) {
     console.log(`    ${SEVERITY_MARK[reason.severity]} ${reason.code}: ${reason.message}`);

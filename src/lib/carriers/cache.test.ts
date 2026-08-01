@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import activeFixture from "./__fixtures__/socrata/mc-186800.active.json";
 import ambiguousFixture from "./__fixtures__/socrata/mc-143229.ambiguous.json";
-import { DEFAULT_TTL_MS, InMemoryCacheStore, readThrough } from "./cache";
+import {
+  DEFAULT_STALE_FALLBACK_MS,
+  DEFAULT_TTL_MS,
+  InMemoryCacheStore,
+  readThrough,
+} from "./cache";
 import { SocrataCarrierSource } from "./socrata";
 import type { CarrierDataSource, LookupResult } from "./types";
 
@@ -318,5 +323,176 @@ describe("readThrough", () => {
 
     expect(fromOther.cached).toBe(false);
     expect(store.size).toBe(2);
+  });
+});
+
+/**
+ * The degraded path: the live lookup failed, and the choice is between an old
+ * record and no record. No record means LOOKUP_FAILED, which blocks the carrier
+ * — so for a bounded window an old record is the better answer, provided it is
+ * never served silently. See docs/DECISIONS.md #16.
+ */
+describe("readThrough — bounded staleness on a failed lookup", () => {
+  const HOUR_MS = 60 * 60 * 1000;
+  const erroringSource = () =>
+    countingSource((mc) => ({ status: "error", mcNumber: mc, message: "Socrata timed out" }));
+
+  /** Seeds a cache entry aged `ageMs` relative to NOW. */
+  async function storeAged(ageMs: number): Promise<InMemoryCacheStore> {
+    const store = new InMemoryCacheStore();
+    await store.write({
+      mcNumber: "186800",
+      source: "socrata",
+      found: true,
+      payload: activeFixture,
+      fetchedAt: new Date(NOW.getTime() - ageMs),
+    });
+    return store;
+  }
+
+  it("serves a past-TTL entry rather than failing the call", async () => {
+    const source = erroringSource();
+    const store = await storeAged(30 * HOUR_MS);
+
+    const result = await readThrough("186800", source, store, { now: NOW });
+
+    expect(result.status).toBe("found");
+    expect(result.cached).toBe(true);
+    expect(result.staleAgeMs).toBe(30 * HOUR_MS);
+  });
+
+  it("returns a record identical to a live one — staleness is metadata, not a different shape", async () => {
+    const store = await storeAged(30 * HOUR_MS);
+    const live = await readThrough("186800", countingSource(foundResult), new InMemoryCacheStore(), {
+      now: NOW,
+    });
+    const stale = await readThrough("186800", erroringSource(), store, { now: NOW });
+
+    if (live.status !== "found" || stale.status !== "found") throw new Error("expected found");
+    expect(stale.record).toEqual(live.record);
+  });
+
+  it("refuses an entry older than the fallback cap", async () => {
+    // Past the cap, "what we last saw" has stopped being evidence about what is
+    // true now, and the honest answer is that we do not know.
+    const source = erroringSource();
+    const store = await storeAged(DEFAULT_STALE_FALLBACK_MS);
+
+    const result = await readThrough("186800", source, store, { now: NOW });
+
+    expect(result.status).toBe("error");
+    expect(result.staleAgeMs).toBeUndefined();
+  });
+
+  it("serves an entry one millisecond inside the cap", async () => {
+    const store = await storeAged(DEFAULT_STALE_FALLBACK_MS - 1);
+
+    const result = await readThrough("186800", erroringSource(), store, { now: NOW });
+
+    expect(result.status).toBe("found");
+    expect(result.staleAgeMs).toBe(DEFAULT_STALE_FALLBACK_MS - 1);
+  });
+
+  it("honours a custom fallback cap", async () => {
+    const store = await storeAged(30 * HOUR_MS);
+
+    const roomy = await readThrough("186800", erroringSource(), store, {
+      now: NOW,
+      staleFallbackMs: 31 * HOUR_MS,
+    });
+
+    expect(roomy.status).toBe("found");
+    expect(roomy.staleAgeMs).toBe(30 * HOUR_MS);
+
+    const tighter = await readThrough("186800", erroringSource(), store, {
+      now: NOW,
+      staleFallbackMs: 29 * HOUR_MS,
+    });
+
+    expect(tighter.status).toBe("error");
+  });
+
+  it("does not flag staleness when the fallback lands inside the TTL", async () => {
+    // forceRefresh skipped a perfectly good entry and the live call then failed.
+    // That record is current. Calling it stale would be its own small lie, and
+    // the flag it raises is one the agent reads aloud.
+    const store = await storeAged(1 * HOUR_MS);
+
+    const result = await readThrough("186800", erroringSource(), store, {
+      now: NOW,
+      forceRefresh: true,
+    });
+
+    expect(result.status).toBe("found");
+    expect(result.cached).toBe(true);
+    expect(result.staleAgeMs).toBeUndefined();
+  });
+
+  it("does not fall back on not_found — a real answer is not overridden by an old one", async () => {
+    // not_found comes from a reachable API saying the registry has no such
+    // carrier. Quietly serving an older record would resurrect an entity FMCSA
+    // says does not exist.
+    const source = countingSource((mc) => ({ status: "not_found", mcNumber: mc }));
+    const store = await storeAged(30 * HOUR_MS);
+
+    const result = await readThrough("186800", source, store, { now: NOW });
+
+    expect(result.status).toBe("not_found");
+    expect(result.staleAgeMs).toBeUndefined();
+  });
+
+  it("refuses a future-dated entry on the degraded path too", async () => {
+    // Same reasoning as the freshness check: this machine's clock runs slow
+    // while a deployed instance writes to the same table.
+    const source = erroringSource();
+    const store = await storeAged(-30 * HOUR_MS);
+
+    const result = await readThrough("186800", source, store, { now: NOW });
+
+    expect(result.status).toBe("error");
+  });
+
+  it("returns the original error when nothing is cached", async () => {
+    const result = await readThrough("186800", erroringSource(), new InMemoryCacheStore(), {
+      now: NOW,
+    });
+
+    expect(result.status).toBe("error");
+    if (result.status !== "error") return;
+    expect(result.message).toContain("Socrata timed out");
+  });
+
+  it("returns the original error when the stale payload no longer normalizes", async () => {
+    const store = new InMemoryCacheStore();
+    await store.write({
+      mcNumber: "186800",
+      source: "socrata",
+      found: true,
+      payload: { garbage: true },
+      fetchedAt: new Date(NOW.getTime() - 30 * HOUR_MS),
+    });
+
+    const result = await readThrough("186800", erroringSource(), store, { now: NOW });
+
+    expect(result.status).toBe("error");
+  });
+
+  it("reads the store once, not twice, when the fresh check misses and the lookup fails", async () => {
+    // The degraded path runs precisely when the network is already unhappy.
+    // A second round trip to Neon on that request is the wrong instinct.
+    const inner = await storeAged(30 * HOUR_MS);
+    let reads = 0;
+    const store = {
+      read: async (mc: string, src: "socrata" | "qcmobile") => {
+        reads++;
+        return inner.read(mc, src);
+      },
+      write: inner.write.bind(inner),
+    };
+
+    const result = await readThrough("186800", erroringSource(), store, { now: NOW });
+
+    expect(result.status).toBe("found");
+    expect(reads).toBe(1);
   });
 });
