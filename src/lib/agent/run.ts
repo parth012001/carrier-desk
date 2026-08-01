@@ -47,6 +47,13 @@ export type RunCallResult = {
   /** Whether the loop ended because the agent said so, or because it ran out of steps. */
   stoppedOnStepCap: boolean;
   usage: Awaited<ReturnType<typeof generateText>>["usage"];
+  /**
+   * The assistant and tool messages this turn produced, ready to append to the
+   * history for the next one. A multi-turn call has to carry tool results
+   * forward or the model loses what it just learned — and it is also what keeps
+   * the cached prefix growing instead of resetting.
+   */
+  responseMessages: ModelMessage[];
 };
 
 export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
@@ -95,5 +102,6 @@ export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
       result.steps.length >= maxSteps &&
       !toolCalls.some((name) => (TERMINAL_TOOLS as readonly string[]).includes(name)),
     usage: result.usage,
+    responseMessages: result.response.messages,
   };
 }

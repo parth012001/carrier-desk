@@ -97,6 +97,12 @@ export class InMemoryLoadStore implements LoadStore {
 
 export class InMemoryCarrierStore implements CarrierStore {
   private readonly carriers = new Map<string, StoredCarrier>();
+  /**
+   * The compliance snapshot exactly as the source reported it, nulls included.
+   * Kept so tests can assert that "this source cannot determine it" survives
+   * the round trip rather than being flattened to false — see DECISIONS #10.
+   */
+  private readonly snapshots = new Map<string, CarrierRecord>();
 
   async upsert(record: CarrierRecord): Promise<StoredCarrier> {
     const existing = this.carriers.get(record.mcNumber);
@@ -112,11 +118,16 @@ export class InMemoryCarrierStore implements CarrierStore {
         };
 
     this.carriers.set(record.mcNumber, next);
+    this.snapshots.set(record.mcNumber, record);
     return next;
   }
 
   snapshot(mcNumber: string): StoredCarrier | null {
     return this.carriers.get(mcNumber) ?? null;
+  }
+
+  recordFor(mcNumber: string): CarrierRecord | null {
+    return this.snapshots.get(mcNumber) ?? null;
   }
 }
 
@@ -129,7 +140,13 @@ export class InMemoryNegotiationSink implements NegotiationSink {
 }
 
 export class InMemoryRunSink implements RunSink {
+  readonly started: Parameters<RunSink["start"]>[0][] = [];
   readonly finished: Parameters<RunSink["finish"]>[0][] = [];
+
+  async start(input: Parameters<RunSink["start"]>[0]): Promise<string> {
+    this.started.push(input);
+    return syntheticId("run", this.started.length - 1);
+  }
 
   async finish(input: Parameters<RunSink["finish"]>[0]): Promise<void> {
     this.finished.push(input);

@@ -69,6 +69,12 @@ export interface NegotiationSink {
 }
 
 export interface RunSink {
+  /**
+   * Opens a run and returns its id. `run_events` and `negotiations` both
+   * foreign-key to it, so nothing can be traced before this exists.
+   */
+  start(input: { mcClaimed: string | null; isEval: boolean; evalPersona: string | null }): Promise<string>;
+
   finish(input: {
     runId: string;
     outcome: RunOutcome;
