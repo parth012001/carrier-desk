@@ -65,7 +65,10 @@ take the load.
 
 ## Blocked / open
 
-- **`ANTHROPIC_API_KEY` is empty in `.env.local` — blocks Day 3.**
+- ~~`ANTHROPIC_API_KEY` is empty~~ — **set and verified 2026-08-01.** Live call to
+  `claude-opus-5` returned 200. Key reaches all current models (opus-5, sonnet-5,
+  fable-5, haiku-4-5). Limits on this key: 10k req/min, 10M input + 2M output
+  tokens/min — comfortable headroom for the Day 5 eval suite. **Day 3 is unblocked.**
 
 ### Deferred from the Day 2 review — do these before the demo
 
