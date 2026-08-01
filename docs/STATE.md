@@ -6,7 +6,12 @@
 
 ## Where we are
 
-Branch: `main` · **Day 2 of 7 COMPLETE** · `pnpm test` 156 green, offline · typecheck clean
+Branch: `main` · **Day 2 of 7 COMPLETE** · `pnpm test` 171 green, offline · typecheck + lint clean
+
+Day 2 went through a full pre-landing review (PR #1). Eight defects found and fixed,
+including two wrong-allows — see `DECISIONS.md` #13 and #14 for the general rules that
+came out of it. Three items were deliberately deferred; they are listed under
+**Blocked / open** and the first one matters before the demo.
 
 ## Done — Day 2
 
@@ -61,6 +66,28 @@ take the load.
 ## Blocked / open
 
 - **`ANTHROPIC_API_KEY` is empty in `.env.local` — blocks Day 3.**
+
+### Deferred from the Day 2 review — do these before the demo
+
+1. **No timeout on any outbound fetch.** `socrata.ts` and `qcmobile.ts` both call
+   `fetch` with no `AbortSignal`. Node's undici defaults are ~300s, so a hung
+   government API stalls a live carrier call for five minutes with a driver on the
+   phone. QCMobile is worse — two sequential calls, so double that. Flagged
+   independently by three reviewers. Needs a deliberate budget (5–8s) **and** a
+   policy decision: on timeout, prefer a stale cache entry over blocking?
+2. **A skeleton payload still returns `allow`.** A near-empty Socrata row normalizes
+   to `legalName: "Unknown"` with every field null. It now carries
+   `OOS_NOT_VERIFIED` + `FOR_HIRE_NOT_VERIFIED` so it is no longer silent, but the
+   decision is unchanged. The systemic fix — an `INSUFFICIENT_DATA` block above N
+   unknown fields — was scoped out on purpose.
+3. **`NEW_AUTHORITY` measures the wrong date.** It reads `add_date` (when the entity
+   entered the census), not when the docket was granted. It therefore misses the
+   reactivated-dormant-DOT chameleon, which is the adversarial case the rule exists
+   to catch. Check whether the census file exposes a docket-grant date at all; if it
+   does not, say so rather than running the check on a proxy that misses the case
+   that matters.
+
+Also open: **no CI.** There is no workflow, so nothing runs `pnpm test` on a PR.
 - FMCSA WebKey not obtained (Login.gov, ~5 min). Not blocking: `QCMobileCarrierSource` is
   written and contract-tested, only its network path is dark. When the key lands, record real
   payloads, delete the three `*.derived.json` files, and `OUT_OF_SERVICE` goes live unchanged.
