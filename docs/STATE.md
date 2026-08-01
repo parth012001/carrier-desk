@@ -51,8 +51,10 @@ take the load.
 
 **Start Day 3 — agent core + eval skeleton.** Per `PLAN.md`:
 
-1. Headless tool-calling loop (Vercel AI SDK + Anthropic). `ANTHROPIC_API_KEY` is still empty
-   in `.env.local` — **this is now blocking.**
+1. Headless tool-calling loop (Vercel AI SDK + Anthropic). Key verified.
+   **Models are chosen — see `DECISIONS.md` #15:** agent + judge `claude-sonnet-5` at
+   `effort: "medium"`, personas `claude-haiku-4-5`. Never disable thinking on a
+   tool-calling path, and assert the prompt prefix actually caches.
 2. Tools: `lookup_carrier`, `get_load`, `check_compliance`, `counter_offer`, `book_load`,
    `escalate_to_human`, `end_call`.
    - `lookup_carrier` wraps `readThrough(mc, source, store)` and `evaluateLookup(result)` —

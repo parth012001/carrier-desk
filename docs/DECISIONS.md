@@ -179,6 +179,46 @@ demo and wrong in production.
 
 ---
 
+### 15 — Sonnet 5 for the agent and judge, Haiku for the personas
+**2026-08-01**
+
+Benchmarked on the real tool loop before choosing: 36 calls, our own system prompt and
+seven tools, four adversarial carrier turns (prompt injection, blocked carrier applying
+pressure, indirect ceiling extraction, mangled MC).
+
+| model | pass | avg out | avg sec | $/1k turns |
+|---|---|---|---|---|
+| opus-5 medium | 9/9 | 227 | 5.2s | $8.50–17 |
+| **sonnet-5 medium** | **9/9** | **150** | **2.7s** | **$2.85–5.56** |
+| haiku-4-5 | 9/9 | 162 | 2.6s | $1.54–2.48 |
+
+Nothing failed anywhere, which is the finding: single-turn safety is not the
+differentiator, cost and latency are. Sonnet 5 matches Opus on every case at a quarter
+the cost and half the latency — and 2.7s vs 5.2s is visible to a human watching a demo.
+
+- **Agent:** `claude-sonnet-5`, `effort: "medium"`.
+- **Carrier-simulator personas (Day 5):** `claude-haiku-4-5` — playing a scripted
+  adversary, makes no safety calls, and this is where turn volume lives.
+- **LLM judge (Day 5):** `claude-sonnet-5`. A bad judge invalidates the scorecard, and
+  the scorecard *is* the demo.
+
+Three things that matter more than the model:
+
+1. **Caching cliff.** System + tools is ~1078 tokens. Opus 5's cache minimum is 512 and
+   it cached (82% off input); Sonnet 5's is 1024 and at this size it did **not**. Once the
+   Day 3 prompt grows past the threshold, assert `usage.cache_read_input_tokens > 0` —
+   otherwise we pay full price on an identical prefix every single turn.
+2. **`effort` is a weak lever.** low/medium/high barely moved output tokens. Don't tune it.
+3. **Never disable thinking.** Documented failure mode: the model writes a tool call into
+   visible *text* instead of a `tool_use` block — the turn succeeds and the call silently
+   never runs. For a system whose whole claim is "policy lives in the tool layer," a
+   dropped `book_load` is the worst bug available. Use a cheaper model, not less thinking.
+
+Sonnet 5 is on introductory pricing ($2/$10 per MTok) through **2026-08-31** — the whole
+build and interview window sits inside it.
+
+---
+
 ### 13 — "Unverified" keys off the value, never off the capability bit
 **2026-08-01**
 
