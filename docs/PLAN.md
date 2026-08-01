@@ -36,6 +36,19 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
       `book_load`, `escalate_to_human`, `end_call`
 - [ ] Negotiation policy enforced in the tool layer — floor/ceiling/max-counters in code
 - [ ] Full trace written to `run_events`
+- [ ] **Regression suite stays green and grows.** Every tool that enforces policy gets
+      table-driven tests the same way `evaluateCompliance` did — enumerate the boundary,
+      don't sample it. Minimum bar:
+      - `book_load` invariant proven exhaustively: **no input produces
+        `booked_rate_cents > rate_ceiling_cents`**, including at/around the boundary,
+        with counters exhausted, and with a hostile model argument in the args.
+      - Max-counter-count enforced in code, tested at N-1 / N / N+1.
+      - The model never receives `rate_ceiling_cents` — assert on the serialized tool
+        schema and on every prompt/message payload, not just on intent.
+      - Tool-layer tests use a **fake model** (scripted tool calls). No live API in
+        `pnpm test`; the network guard in `src/test/setup.ts` must stay green.
+      - Trace completeness: a run writes one `run_events` row per tool call with args,
+        result, and duration.
 - [ ] **Walking-skeleton eval: one persona, one judge call, one printed score, end to end.**
       Ugly is fine. This exists so Day 5 is scaling, not building.
 
