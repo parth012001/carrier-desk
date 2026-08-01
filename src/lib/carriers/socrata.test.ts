@@ -54,6 +54,7 @@ describe("SocrataCarrierSource.normalize — real recorded payloads", () => {
         safetyRating: true,
         powerUnits: true,
         priorRevocation: true,
+        authorityGrantedAt: true,
       },
       ambiguousWith: [],
     });

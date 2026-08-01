@@ -65,6 +65,7 @@ function recordFor(axes: Axes): CarrierRecord {
       safetyRating: true,
       powerUnits: true,
       priorRevocation: true,
+      authorityGrantedAt: true,
     },
     ambiguousWith: [],
   };

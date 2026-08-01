@@ -1,0 +1,32 @@
+{
+  "_derivation": {
+    "status": "DERIVED — NOT A REAL RECORDING",
+    "why": "The Socrata census file cannot distinguish carrier authority from broker authority — classdef says AUTHORIZED FOR HIRE for both. Only QCMobile splits common/contract/broker, which is what makes this check possible at all.",
+    "derivedFrom": "./dot-286764.active.derived.json",
+    "shapeSource": "https://mobile.fmcsa.dot.gov/QCDevsite/docs/apiElements",
+    "mutations": [
+      "authority[].commonAuthorityStatus: A -> I",
+      "authority[].brokerAuthorityStatus: I -> A"
+    ],
+    "note": "An entity holding only broker authority cannot legally haul freight. Tendering a load to one IS double-brokering, so this must resolve to authorizedForHire=false and block. GENERAL TRANSPORT INC really does hold carrier authority; this is a hand-built test input.",
+    "replaceWhen": "An FMCSA WebKey is obtained. Record a real broker-only entity and delete this file."
+  },
+  "carrier": {
+    "dotNumber": 286764,
+    "legalName": "GENERAL TRANSPORT INC",
+    "dbaName": null,
+    "telephone": "8006276055",
+    "statusCode": "A",
+    "safetyRating": "S",
+    "totalPowerUnits": 85,
+    "outOfService": "N",
+    "allowedToOperate": "Y"
+  },
+  "authority": [
+    {
+      "commonAuthorityStatus": "I",
+      "contractAuthorityStatus": "I",
+      "brokerAuthorityStatus": "A"
+    }
+  ]
+}

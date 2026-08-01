@@ -1,0 +1,33 @@
+{
+  "_derivation": {
+    "status": "DERIVED — NOT A REAL RECORDING",
+    "why": "QCMobile requires an FMCSA WebKey (Login.gov). Unkeyed requests 404 with {\"content\":\"Must provide Webkey\"}, so no real payload can be recorded yet.",
+    "derivedFrom": "src/lib/carriers/__fixtures__/socrata/mc-186800.active.json — real recorded Socrata census record for GENERAL TRANSPORT INC, DOT 286764 / MC-186800",
+    "shapeSource": "https://mobile.fmcsa.dot.gov/QCDevsite/docs/apiElements — documented element names, not an observed response",
+    "syntheticFields": [
+      "outOfService — set to N; the Socrata census file has no such column, so this value has no real-world source",
+      "allowedToOperate — set to Y, consistent with outOfService=N",
+      "authority[].commonAuthorityStatus — set to A to mirror the real docket1_status_code=A",
+      "authority[].contractAuthorityStatus / brokerAuthorityStatus — set to I; the real split is unknown"
+    ],
+    "replaceWhen": "An FMCSA WebKey is obtained. Record the real payload, delete this file, and drop the .derived. suffix."
+  },
+  "carrier": {
+    "dotNumber": 286764,
+    "legalName": "GENERAL TRANSPORT INC",
+    "dbaName": null,
+    "telephone": "8006276055",
+    "statusCode": "A",
+    "safetyRating": "S",
+    "totalPowerUnits": 85,
+    "outOfService": "N",
+    "allowedToOperate": "Y"
+  },
+  "authority": [
+    {
+      "commonAuthorityStatus": "A",
+      "contractAuthorityStatus": "I",
+      "brokerAuthorityStatus": "I"
+    }
+  ]
+}

@@ -38,7 +38,23 @@ export type SourceCapabilities = {
   safetyRating: boolean;
   powerUnits: boolean;
   priorRevocation: boolean;
+  authorityGrantedAt: boolean;
 };
+
+/**
+ * The CarrierRecord fields a source may decline to answer. Every one of these
+ * has a matching SourceCapabilities key, and the cross-source contract test
+ * asserts that a `false` capability always pairs with a `null` value — so a
+ * difference between two sources is always a declared gap, never a bug.
+ */
+export const CAPABILITY_FIELDS = {
+  authorityStatus: "authorityStatus",
+  outOfService: "isOutOfService",
+  safetyRating: "safetyRating",
+  powerUnits: "powerUnits",
+  priorRevocation: "priorRevocation",
+  authorityGrantedAt: "authorityGrantedAt",
+} as const satisfies Record<keyof SourceCapabilities, keyof CarrierRecord>;
 
 export type CarrierRecord = {
   /** Digits only. No "MC-" prefix, no leading zeros. */

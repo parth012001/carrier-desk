@@ -46,6 +46,7 @@ export const SOCRATA_CAPABILITIES: SourceCapabilities = {
   safetyRating: true,
   powerUnits: true,
   priorRevocation: true,
+  authorityGrantedAt: true, // add_date
 };
 
 /**
