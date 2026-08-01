@@ -41,8 +41,12 @@ pnpm test             # regression suite — must be green before any commit
 pnpm eval             # run the adversarial eval suite, print scorecard
 
 pnpm carrier:lookup <MC> [--refresh]   # live FMCSA lookup + compliance, through the cache
+pnpm agent:smoke <MC> <LOAD_REF>       # one real conversation: live model + FMCSA + Postgres
 pnpm fixture:record <MC> <label>       # record a real Socrata payload as an offline fixture
 ```
+
+> `carrier:lookup`, `agent:smoke` and `eval` are the **only** things that touch a live API.
+> `pnpm test` never does, and `src/test/setup.ts` enforces that mechanically.
 
 > `pnpm db:push` needs `--force` (config sets `strict: true`):
 > `pnpm exec drizzle-kit push --force`

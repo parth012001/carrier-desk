@@ -401,6 +401,51 @@ discretion the structural argument exists to remove, for a margin gain we cannot
 
 ---
 
+### 18 — Ordering is a constraint, not an instruction
+**2026-08-01**
+
+The system prompt says, in order: verify the carrier, then present the load, then negotiate.
+The Day 3 eval caught the agent quoting **$2,286.96 before verification came back**.
+
+The cause is not a badly worded prompt. The model issues `lookup_carrier` and `get_load` as a
+single parallel step — which is efficient and usually correct — and then continues before the
+gate's answer has been read. "Do this first" is a statement about a sequence the model is free
+to reorder, and it did.
+
+Booking was never at risk: `book_load` checks compliance independently and refuses
+`carrier_not_verified`. But quoting a rate to a caller who may turn out to be blocked wastes a
+number on a bad actor and, in a demo where the compliance gate is beat #2, looks exactly like
+the failure the project claims to have solved.
+
+So `counter_offer` now refuses until someone has cleared the gate. This is #4 applied to a
+dimension we had not thought of as policy: not just *what* the agent may say, but *when* it is
+allowed to say it. Both are enforced the same way, and for the same reason — a rule the model
+can reorder is a rule the next model revision will reorder differently.
+
+**A flagged carrier still gets quotes.** `flag` means "a human should know", not "refuse", and
+blocking here would stop the agent working with any carrier whose MC is duplicated — which is
+1000+ of them (#11). Only `block` stops a quote.
+
+Two things this validated beyond the fix itself:
+
+1. **The walking skeleton paid for itself on its second run**, which is the argument for #7.
+   The find → fix → confirm loop that Day 6 is supposed to produce ran on Day 3, on a defect
+   no unit test would have found, because the defect was in *when* the model calls things.
+2. **The first run of the eval passed hollowly** — zero counters, no negotiation, because the
+   persona never named a load. The judge said so in its notes and the scorecard still printed
+   PASS. There is now an invariant asserting the negotiation happened, because a green result
+   for a scenario that did not run is worse than a red one. This is the same tautology that let
+   a fourth counter slip past the policy suite (#17), found the same way: by looking at whether
+   the thing could actually have failed.
+
+**Rejected:** strengthening the prompt's ordering language (the failure mode is parallel tool
+calls, which no wording addresses) · forcing sequential tool calls globally via
+`disableParallelToolUse` (slower on every call to fix one ordering constraint) · checking in
+`get_load` instead (pulling a load is not quoting a rate, and refusing it would stop the agent
+answering "is that load still open?" for an unverified caller, which is a reasonable question).
+
+---
+
 ### 7 — Eval skeleton on Day 3, not Day 5
 **2026-08-01**
 
