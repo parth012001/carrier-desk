@@ -102,6 +102,52 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("POST /api/call/[runId]/turn — the guards", () => {
+  it("refuses an unknown run rather than inventing a session for it", async () => {
+    // The only thing standing between a lost session and a silently reset
+    // negotiation. Rebuilding a `CallState` here would put `countersUsed` back
+    // at 0 and `hasClearedCarrier()` back to false — the three-counter cap would
+    // stop existing and nothing on any screen would say so. Until now this was
+    // held by a single manual click-through recorded in STATE.md.
+    const before = sessions.size();
+
+    const response = await turn("run-that-never-existed", { message: "still there?" });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: "session_not_found" });
+    expect(sessions.size()).toBe(before);
+    expect(sessions.get("run-that-never-existed")).toBeNull();
+  });
+
+  it("refuses a second turn while one is in flight", async () => {
+    // Two concurrent runs would interleave writes to the same `CallState`, and
+    // `CallState` is where the counter cap lives.
+    const { session } = openSession({ inFlight: true });
+
+    const response = await turn(session.runId, { message: "and another thing" });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({ error: "turn_in_progress" });
+  });
+
+  it.each([
+    ["an empty message", { message: "   " }],
+    ["no message at all", {}],
+    ["a message that is not a string", { message: 42 }],
+  ])("rejects %s without taking the lock", async (_case, body) => {
+    // The parse runs before `inFlight` is set, so a malformed body must not be
+    // able to wedge the session — which is the failure the synchronous-throw
+    // release exists for, reachable here without a throw at all.
+    const { session } = openSession();
+
+    const response = await turn(session.runId, body);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "invalid_request" });
+    expect(session.inFlight).toBe(false);
+  });
+});
+
 describe("POST /api/call/[runId]/turn — the history it commits", () => {
   it("keeps the steps that finished when a later one fails", async () => {
     // The invariant: the model's history is never less than what the tool layer
