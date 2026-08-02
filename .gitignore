@@ -44,3 +44,4 @@ next-env.d.ts
 # Per-employer pitch notes — interview strategy, kept local on purpose.
 # The product in src/ is company-neutral; see docs/DECISIONS.md #9.
 docs/pitch/
+.gstack/

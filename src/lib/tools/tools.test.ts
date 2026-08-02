@@ -300,6 +300,41 @@ describe("counter_offer", () => {
     expect(result).toMatchObject({ action: "accept", rate_cents: bargain });
   });
 
+  it("restates a settled rate under the round that produced it", async () => {
+    // A settled number stays settled, so reopening returns the same rate — and
+    // it has to say which counter that was. Reporting a fresh round, or leaving
+    // the round to be counted downstream, lets the ladder draw a rung the tool
+    // layer never made and call it the next one.
+    const h = await verified();
+    const first = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      carrier_asked_cents: h.loads.snapshot(REF)!.rateFloorCents - 10_000,
+    })) as { action: string; round: number };
+    expect(first).toMatchObject({ action: "accept", round: 1 });
+
+    const used = h.state.countersUsed(REF);
+    const again = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+    })) as { action: string; round: number };
+
+    expect(again).toMatchObject({ action: "accept", round: 1 });
+    expect(h.state.countersUsed(REF)).toBe(used);
+  });
+
+  it("reports the round it actually consumed, on every counter", async () => {
+    const h = await verified();
+
+    for (let round = 1; round <= MAX_COUNTERS; round++) {
+      const result = (await callTool(h.tools, "counter_offer", {
+        load_ref: REF,
+        mc_number: MC_ALLOWED,
+      })) as { round: number };
+      expect(result.round, `round ${round}`).toBe(round);
+    }
+  });
+
   it("does not burn a counter on a walked-away turn", async () => {
     // There is nothing to consume: we did not say a number.
     const h = await verified();

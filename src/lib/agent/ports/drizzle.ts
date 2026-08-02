@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, max, sql } from "drizzle-orm";
 import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
 
 import * as schema from "@/db/schema";
@@ -160,23 +160,79 @@ export class DrizzleRunSink implements RunSink {
  * Writes the trace to `run_events`.
  *
  * Sequence numbers are assigned here rather than by callers, for the same
- * reason InMemoryTraceSink does it: it is the only place they can be guaranteed
- * dense. Writes are awaited in order so the sequence a reader sees matches the
- * order things happened — a trace whose rows arrive out of order is worse than
- * one that is slightly slower to write.
+ * reason InMemoryTraceSink does it: it is the only place that can hand out a
+ * number no other writer will use. Writes are awaited in order so the sequence
+ * a reader sees matches the order things happened — a trace whose rows arrive
+ * out of order is worse than one that is slightly slower to write.
+ *
+ * **Numbering starts from what is already stored, not from zero — and this is
+ * hardening, not a repair.** No shipped path builds two sinks for one run:
+ * `startCall` builds one per call and the turn route reuses that instance, and
+ * a missing session is a 409 rather than a rebuild, so a second sink for a
+ * given `runId` is not constructible today. An in-process counter would still
+ * be correct.
+ *
+ * It will not stay that way. Day 7 owes a durable `SessionStore`, and the point
+ * of that store is that a call survives the process that started it — at which
+ * moment a second sink for one run is not just constructible but ordinary, and
+ * a counter starting at 0 would collide with rows already in the table. A crash
+ * and restart mid-call reaches the same place today. Resolving from `max(seq)`
+ * costs one read per call and removes the assumption rather than documenting
+ * it; `(run_id, seq)` is a unique index, so a collision would be a failed
+ * insert and a hole in the trace rather than two rows claiming one position.
  */
 export class DrizzleTraceSink implements TraceSink {
-  private seq = 0;
+  /** Resolves to the next unused seq. Null until the first write asks. */
+  private nextSeq: Promise<number> | null = null;
 
   constructor(
     private readonly db: AgentDb,
     private readonly runId: string,
   ) {}
 
+  /**
+   * Hands out the next sequence number.
+   *
+   * The advance is synchronous even though the value is a promise, which is
+   * what makes it safe under concurrency: the model issues tool calls in
+   * parallel within a step, so two `write` calls genuinely do overlap, and a
+   * read-then-increment would hand both the same number.
+   */
+  private reserve(): Promise<number> {
+    const current = this.nextSeq ?? this.readNextSeq();
+    const advanced = current.then((seq) => seq + 1);
+    // If `current` rejects then so does `advanced`, and `readNextSeq` has
+    // already cleared the chain — so nothing will ever await it. Mark it
+    // handled: a dropped trace row must not surface as an unhandled rejection
+    // and take the process down. Anyone still holding it gets the rejection.
+    advanced.catch(() => {});
+    this.nextSeq = advanced;
+    return current;
+  }
+
+  private async readNextSeq(): Promise<number> {
+    try {
+      const [row] = await this.db
+        .select({ highest: max(runEvents.seq) })
+        .from(runEvents)
+        .where(eq(runEvents.runId, this.runId));
+      return (row?.highest ?? -1) + 1;
+    } catch (error) {
+      // Never guess. Numbering from 0 after a failed read is precisely the
+      // duplicate this method exists to prevent, and `(run_id, seq)` is unique
+      // now, so a guess would be rejected anyway. Clearing the chain lets the
+      // next row retry instead of inheriting a rejected promise for the rest
+      // of the call; `writeTrace` drops and logs this one.
+      this.nextSeq = null;
+      throw error;
+    }
+  }
+
   async write(event: TraceEventInput): Promise<void> {
+    const seq = await this.reserve();
     await this.db.insert(runEvents).values({
       runId: this.runId,
-      seq: this.seq++,
+      seq,
       type: event.type,
       name: event.name ?? null,
       // jsonb columns; undefined would drop the key entirely, and a trace with

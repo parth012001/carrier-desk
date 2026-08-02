@@ -13,7 +13,13 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "node",
-    include: ["src/**/*.test.ts"],
+    // `.tsx` as well, because this project has components now and a pattern that
+    // cannot see them does not fail — it reports green on a file it never ran.
+    // Still `environment: "node"`: nothing here needs a DOM. `renderToStaticMarkup`
+    // renders a pure component to a string, which is what the ladder's guards are
+    // about. A test that does need one has to say so, and adding jsdom is a
+    // decision rather than a default.
+    include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
   },
   resolve: {
