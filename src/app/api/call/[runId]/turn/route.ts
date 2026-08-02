@@ -69,63 +69,84 @@ export async function POST(
   const turnMessages = [...session.messages, userMessage];
 
   const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) {
-      const send = (event: CallEvent) => {
-        try {
-          controller.enqueue(encoder.encode(encodeCallEvent(event)));
-        } catch {
-          // The reader went away. The call keeps running and keeps writing to
-          // run_events — which is the whole reason the sinks are tee'd.
-        }
-      };
-
-      const trace = new TeeTraceSink(
-        session.deps.trace,
-        new CallbackTraceSink((event) => send(toCallEvent(event))),
-      );
-
-      // Tools are built here, not at call start, because `buildTools` captures
-      // `deps.trace` — and the live branch of that trace belongs to *this*
-      // connection. Tools built once at call start wrote only to Postgres, so
-      // the browser saw the conversation and not one tool call, which is the
-      // whole pane. `state` is the object that has to survive between turns;
-      // the tool set is a closure over it and costs nothing to rebuild.
-      const tools = buildTools({
-        deps: { ...session.deps, trace },
-        state: session.state,
-      });
-
-      // Deliberately not awaited. The Response has to be returned while this is
-      // still running, or there is nothing to stream.
-      runCall({ model: agentModel(), tools, messages: turnMessages, trace })
-        .then((result) => {
-          session.messages = [...turnMessages, ...result.responseMessages];
-          send({
-            kind: "turn_end",
-            text: result.text,
-            finished: !result.stoppedOnStepCap,
-            toolCalls: result.toolCalls,
-          });
-        })
-        .catch((error: unknown) => {
-          console.error(`[call ${runId}] turn failed:`, error);
-          send({
-            kind: "error",
-            message: error instanceof Error ? error.message : String(error),
-          });
-        })
-        .finally(() => {
-          session.inFlight = false;
-          session.lastTouchedAtMs = Date.now();
+  let stream: ReadableStream<Uint8Array>;
+  try {
+    stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const send = (event: CallEvent) => {
+          let line: string;
           try {
-            controller.close();
-          } catch {
-            // Already closed, because the client cancelled the stream.
+            line = encodeCallEvent(event);
+          } catch (error) {
+            // Not the reader's fault, and not silent. A payload that will not
+            // serialise is a hole in a pane that claims to show everything, so
+            // it has to reach the logs even though the durable row was written.
+            console.error(`[call ${runId}] could not serialise a ${event.kind} event:`, error);
+            return;
           }
+          try {
+            controller.enqueue(encoder.encode(line));
+          } catch {
+            // The reader went away. The call keeps running and keeps writing to
+            // run_events — which is the whole reason the sinks are tee'd.
+          }
+        };
+
+        const trace = new TeeTraceSink(
+          session.deps.trace,
+          new CallbackTraceSink((event) => send(toCallEvent(event))),
+        );
+
+        // Tools are built here, not at call start, because `buildTools` captures
+        // `deps.trace` — and the live branch of that trace belongs to *this*
+        // connection. Tools built once at call start wrote only to Postgres, so
+        // the browser saw the conversation and not one tool call, which is the
+        // whole pane. `state` is the object that has to survive between turns;
+        // the tool set is a closure over it and costs nothing to rebuild.
+        const tools = buildTools({
+          deps: { ...session.deps, trace },
+          state: session.state,
         });
-    },
-  });
+
+        // Deliberately not awaited. The Response has to be returned while this is
+        // still running, or there is nothing to stream.
+        runCall({ model: agentModel(), tools, messages: turnMessages, trace })
+          .then((result) => {
+            session.messages = [...turnMessages, ...result.responseMessages];
+            send({
+              kind: "turn_end",
+              text: result.text,
+              finished: !result.stoppedOnStepCap,
+              toolCalls: result.toolCalls,
+            });
+          })
+          .catch((error: unknown) => {
+            console.error(`[call ${runId}] turn failed:`, error);
+            send({
+              kind: "error",
+              message: error instanceof Error ? error.message : String(error),
+            });
+          })
+          .finally(() => {
+            session.inFlight = false;
+            session.lastTouchedAtMs = Date.now();
+            try {
+              controller.close();
+            } catch {
+              // Already closed, because the client cancelled the stream.
+            }
+          });
+      },
+    });
+  } catch (error) {
+    // `start` runs synchronously inside the constructor, so a throw from
+    // building the tee, the tools or the model lands here — *before* the
+    // `.finally` that releases the lock has been registered. Without this the
+    // session stays `inFlight` and answers 409 to every later turn until the
+    // hour-long sweep collects it, with no way for the operator to clear it.
+    session.inFlight = false;
+    throw error;
+  }
 
   return new Response(stream, {
     headers: {

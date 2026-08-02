@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { type CallEvent, decodeCallEvents } from "@/lib/call/events";
 import { EQUIPMENT_LABEL, humanCode, pickupWindow, usd } from "@/lib/call/format";
@@ -46,6 +46,16 @@ export function CallConsole({ loads }: { loads: BrokerLoad[] }) {
   const [running, setRunning] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
   const runIdRef = useRef<string | null>(null);
+  /**
+   * Bumped by `reset`. A turn belongs to the call that started it, and the only
+   * thing that used to say so was hope: "new call" emptied `events` while the
+   * previous turn's read loop was still appending into it, so call A's carrier,
+   * compliance verdict and booking landed inside call B's view.
+   */
+  const generationRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   const view = useMemo(() => projectCall(events), [events]);
   const load = useMemo(
@@ -54,35 +64,64 @@ export function CallConsole({ loads }: { loads: BrokerLoad[] }) {
   );
 
   const send = useCallback(async (message: string) => {
+    const generation = generationRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    /** False once this turn's call has been replaced. Nothing stale may write. */
+    const current = () => generationRef.current === generation && !controller.signal.aborted;
+
     setRunning(true);
     setFatal(null);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       if (runIdRef.current === null) {
         const started = await fetch("/api/call", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ mc_number: claimedMc(message) }),
+          signal: controller.signal,
         });
-        const body = await started.json();
-        if (!started.ok) throw new Error(body.message ?? body.error ?? "Could not start the call.");
+        // Parsed defensively: a proxy or framework error page is HTML, and an
+        // unguarded `.json()` reports a syntax error rather than the real one.
+        const body = await started.json().catch(() => null);
+        if (!started.ok || typeof body?.run_id !== "string") {
+          throw new Error(
+            body?.message ?? body?.error ?? `Could not start the call (${started.status}).`,
+          );
+        }
+        if (!current()) return;
         runIdRef.current = body.run_id;
         setRunId(body.run_id);
       }
 
-      const response = await fetch(`/api/call/${runIdRef.current}/turn`, {
+      const activeRunId = runIdRef.current;
+      if (activeRunId === null) throw new Error("Could not start the call.");
+
+      const response = await fetch(`/api/call/${encodeURIComponent(activeRunId)}/turn`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message }),
+        signal: controller.signal,
       });
 
       if (!response.ok || response.body === null) {
         const body = await response.json().catch(() => null);
+        // Gone, not busy — the two share a 409 and need opposite recoveries.
+        // Keeping the dead runId sent every retry back to the same session that
+        // no longer exists, so the console stayed wedged until someone found
+        // "new call". Dropping it lets the next message open a fresh call.
+        if (body?.error === "session_not_found") {
+          runIdRef.current = null;
+          setRunId(null);
+        }
         throw new Error(body?.message ?? body?.error ?? `Turn failed (${response.status}).`);
       }
 
-      const reader = response.body.getReader();
+      reader = response.body.getReader();
       const decoder = new TextDecoder();
       let rest = "";
+      /** A stream that ends without one of these was cut, not completed. */
+      let sawTerminal = false;
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -90,22 +129,45 @@ export function CallConsole({ loads }: { loads: BrokerLoad[] }) {
         // mid-object, so whatever is left over waits for the next chunk.
         const parsed = decodeCallEvents(rest + decoder.decode(value, { stream: true }));
         rest = parsed.rest;
+        if (parsed.events.some((e) => e.kind === "turn_end" || e.kind === "error")) {
+          sawTerminal = true;
+        }
         if (parsed.events.length > 0) {
+          if (!current()) return;
           setEvents((previous) => [...previous, ...parsed.events]);
         }
       }
+
+      // Silence used to read as success. The function being killed at
+      // `maxDuration`, or a proxy half-closing, left the composer saying "your
+      // turn" while the agent had kept going — and if `book_load` had already
+      // committed, the load sat covered with nothing on screen to say so.
+      if (!sawTerminal) {
+        throw new Error(
+          "The call stream ended before the turn finished. The agent may have kept running — " +
+            "check the run before trusting this screen.",
+        );
+      }
     } catch (error) {
+      if (!current()) return;
       setFatal(error instanceof Error ? error.message : String(error));
     } finally {
-      setRunning(false);
+      await reader?.cancel().catch(() => {});
+      if (current()) setRunning(false);
     }
   }, []);
 
   const reset = useCallback(() => {
+    // Abort first. The in-flight reader has to lose its claim on this view
+    // before the view is emptied, or it refills it with the old call.
+    generationRef.current += 1;
+    abortRef.current?.abort();
+    abortRef.current = null;
     runIdRef.current = null;
     setRunId(null);
     setEvents([]);
     setFatal(null);
+    setRunning(false);
   }, []);
 
   return (
