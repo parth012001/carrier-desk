@@ -18,11 +18,11 @@ Day 4 is a transport around the Day 3 core, exactly as planned — **`runCall` i
 The trace sink turned out to be the seam: `withTrace` already routed every tool call through
 one, so the browser gets a second sink tee'd beside the durable one. `DECISIONS.md` #20.
 
-It also closed **two of the eleven deferred criticals**, both of which this day's work promoted
-from latent to load-bearing: #1 (a trace-write failure could report a committed booking as a
-failure — a database outage was needed before; a closed browser tab is enough once the sink
-streams) and #10 (`seq` restarting at 0 each turn, which made the pane interleave turn 2 into
-turn 1). Both mutation-tested.
+It also closed **two of the eleven deferred criticals**. #1 is a genuine repair this day's work
+promoted from latent to load-bearing: a trace-write failure could report a committed booking as
+a failure, and a database outage was needed to reach it before a closed browser tab was enough.
+#10 is **hardening, not a repair** — the numbering was correct for every path that shipped, and
+the entry claiming otherwise was wrong. See the corrected #10 below. Both mutation-tested.
 
 **Day 3 is merged.** PR #2 landed as `772174c`. The pre-landing review's remaining nine
 criticals are still listed under **Blocked / open**.
@@ -73,7 +73,8 @@ criticals are still listed under **Blocked / open**.
   agent refuses, calls `end_call`, and the composer disables itself.
 - Tool calls stream with real latencies (`get_load` 88ms, `lookup_carrier` 401ms) and you can
   see the model issue them as **one parallel step** — the Day 3 ordering story, visible.
-- `seq` stayed dense `0..6` across two separate HTTP requests instead of restarting.
+- `seq` ran `0..6` across two separate HTTP requests. Worth reading as what it is: confirmation
+  that one sink serves a whole call, not evidence that anything was restarting. See #10.
 - An unknown `runId` returns **409**, never a rebuilt `CallState`.
 - No console errors, no horizontal overflow at either viewport.
 
@@ -257,14 +258,27 @@ Ranked. Each was confirmed by reading the code; several were reproduced against 
 9. **The 7-day stale-cache fallback turns a failed FMCSA check from block into flag.** Bounded
    and documented (#16), but it is an authorization check that now defaults to allow on failure,
    and the API being down is when an attacker would prefer to call.
-10. ~~**`DrizzleTraceSink.seq` is per-instance**~~ **FIXED on Day 4.** Numbering now resolves
-    lazily from `max(seq)` for the run, so a sink built for turn 2 continues rather than
-    restarting at 0. `(run_id, seq)` is a `uniqueIndex` now — verified zero existing duplicates
-    (14 events / 2 runs) before pushing, and it replaces the redundant plain composite index.
-    The reservation advances synchronously behind a promise chain because the model issues tool
-    calls in parallel within a step, so overlapping writes are real and a read-then-increment
-    would hand both the same number. Day 4 forced this: one sink per HTTP request meant turn 2
-    restarted at 0 and the trace pane interleaved it into turn 1.
+10. ~~**`DrizzleTraceSink.seq` is per-instance**~~ **HARDENED on Day 4, not repaired — the
+    original entry was written against a failure the shipped code never had.** Numbering now
+    resolves lazily from `max(seq)` for the run, so a sink built for a later turn continues
+    rather than restarting at 0. `(run_id, seq)` is a `uniqueIndex` now — verified zero existing
+    duplicates (14 events / 2 runs) before pushing, and it replaces the redundant plain
+    composite index. The reservation advances synchronously behind a promise chain because the
+    model issues tool calls in parallel within a step, so overlapping writes are real and a
+    read-then-increment would hand both the same number.
+
+    **What was written down and is false:** that the interface built one sink per HTTP request,
+    so turn 2 restarted at 0 and readers interleaved it into turn 1. It does not. `startCall`
+    builds one `DrizzleTraceSink` per call and the turn route reuses that instance
+    (`new TeeTraceSink(session.deps.trace, …)`); a missing session 409s rather than rebuilding,
+    so a second sink for one `runId` is not constructible. `git log` settles it: the fix
+    (`ec38a19`) landed *before* the transport commit (`dea09ee`) that would have exhibited it.
+
+    **What is true:** this is forward hardening for Day 7's durable `SessionStore`, where a call
+    outlives the process that started it and a second writer for one run becomes ordinary — and
+    for a crash and restart mid-call, which reaches the same place today. The change is correct
+    and stays. Corrected on 2026-08-02 in `drizzle.ts`, `trace-sink.test.ts`, `PLAN.md` and the
+    PR #3 body.
 11. **Unwritten columns:** `runs.compliance_decision`, `eval_results.run_id`, and every carrier
     Twin field (`total_booked`, `last_rate_accepted_cents`, `last_load_ref`). `runs.load_id` was
     fixed on this branch. Also: the eval writes runs to `InMemoryRunSink`, so `is_eval` is never

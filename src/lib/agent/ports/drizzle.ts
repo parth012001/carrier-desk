@@ -160,17 +160,26 @@ export class DrizzleRunSink implements RunSink {
  * Writes the trace to `run_events`.
  *
  * Sequence numbers are assigned here rather than by callers, for the same
- * reason InMemoryTraceSink does it: it is the only place they can be guaranteed
- * dense. Writes are awaited in order so the sequence a reader sees matches the
- * order things happened — a trace whose rows arrive out of order is worse than
- * one that is slightly slower to write.
+ * reason InMemoryTraceSink does it: it is the only place that can hand out a
+ * number no other writer will use. Writes are awaited in order so the sequence
+ * a reader sees matches the order things happened — a trace whose rows arrive
+ * out of order is worse than one that is slightly slower to write.
  *
- * **Numbering starts from what is already stored, not from zero.** A counter
- * that began at 0 was correct while a single process owned an entire call —
- * `agent-smoke` builds one sink and reuses it across turns. The interface
- * builds one per HTTP request, so turn 2 restarted at 0 and any reader
- * ordering by `seq` interleaved turn 2's rows into turn 1's. Since the trace
- * is now something people read, that is a rendering bug, not just untidiness.
+ * **Numbering starts from what is already stored, not from zero — and this is
+ * hardening, not a repair.** No shipped path builds two sinks for one run:
+ * `startCall` builds one per call and the turn route reuses that instance, and
+ * a missing session is a 409 rather than a rebuild, so a second sink for a
+ * given `runId` is not constructible today. An in-process counter would still
+ * be correct.
+ *
+ * It will not stay that way. Day 7 owes a durable `SessionStore`, and the point
+ * of that store is that a call survives the process that started it — at which
+ * moment a second sink for one run is not just constructible but ordinary, and
+ * a counter starting at 0 would collide with rows already in the table. A crash
+ * and restart mid-call reaches the same place today. Resolving from `max(seq)`
+ * costs one read per call and removes the assumption rather than documenting
+ * it; `(run_id, seq)` is a unique index, so a collision would be a failed
+ * insert and a hole in the trace rather than two rows claiming one position.
  */
 export class DrizzleTraceSink implements TraceSink {
   /** Resolves to the next unused seq. Null until the first write asks. */

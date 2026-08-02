@@ -62,7 +62,10 @@ describe("withTrace", () => {
 
   it("numbers events densely, with no gaps", async () => {
     // Sequencing lives in the sink, not in callers, because that is the only
-    // place it can be guaranteed. A trace with holes is one nobody trusts.
+    // place no two rows can claim one position. This sink numbers from the
+    // array length after the push, so its sequence is dense as well —
+    // DrizzleTraceSink's is not, and deliberately: it reserves before the
+    // insert so a dropped row cannot fail the work it describes.
     const sink = new InMemoryTraceSink();
     const ok = withTrace("a", sink, async () => "fine");
     const boom = withTrace("b", sink, async () => {

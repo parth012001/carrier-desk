@@ -10,7 +10,16 @@
 export type TraceEventType = "tool_call" | "assistant_message" | "user_message";
 
 export type TraceEvent = {
-  /** Dense and gap-free within a run. Assigned by the sink, never by callers. */
+  /**
+   * Monotonic and collision-free within a run. Assigned by the sink, never by
+   * callers.
+   *
+   * Not dense. `DrizzleTraceSink.reserve()` hands out the number before the
+   * insert and `writeTrace` swallows a failed one, so a dropped row burns its
+   * position permanently — which is the right trade, because the alternative is
+   * a trace write that can fail the work it describes. A gap means a row was
+   * lost and logged, and it is readable as exactly that.
+   */
   seq: number;
   type: TraceEventType;
   /** Tool name, when type is tool_call. */
@@ -29,8 +38,11 @@ export interface TraceSink {
 
 /**
  * Sequencing lives in the sink rather than in callers on purpose: it is the
- * only place that can guarantee the numbers are dense and gap-free, and a
- * trace with holes in it is one nobody trusts enough to read.
+ * only place that can guarantee no two rows claim the same position, and a
+ * trace two readers can order differently is one nobody trusts enough to read.
+ *
+ * This one numbers from the array length after the push succeeds, so its
+ * sequence really is dense. The durable sink's is not — see `TraceEvent.seq`.
  */
 export class InMemoryTraceSink implements TraceSink {
   readonly events: TraceEvent[] = [];

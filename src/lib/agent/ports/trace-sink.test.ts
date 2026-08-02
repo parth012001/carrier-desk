@@ -4,9 +4,17 @@ import { writeTrace } from "../trace";
 import { type AgentDb, DrizzleTraceSink } from "./drizzle";
 
 /**
- * The first test on any `Drizzle*` port, and it earns the exception: Day 4
- * builds one sink per HTTP request, so where the numbering starts stopped
- * being an implementation detail and became what the trace pane renders.
+ * The first test on any `Drizzle*` port, and it earns the exception: the trace
+ * is rendered now, so where the numbering starts stopped being an
+ * implementation detail and became what a reader sees.
+ *
+ * Note what this class is defending against, because it is not what the code
+ * shipped on Day 4 could do. Nothing today builds two sinks for one run —
+ * `startCall` builds one per call, the turn route reuses it, and a missing
+ * session 409s rather than rebuilding. What makes the numbering worth resolving
+ * from the table is Day 7's durable `SessionStore`, where a call outlives the
+ * process that started it, plus the crash-and-restart that reaches the same
+ * place today. These tests are written against that second writer.
  *
  * The fake answers `max(seq)` from what it has been given and ignores the
  * `where` clause — filtering by run is Drizzle's job, not this class's. That
