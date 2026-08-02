@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { InMemoryLoadStore } from "@/lib/agent/ports/memory";
+import { usd } from "@/lib/call/format";
 import type { Offer } from "@/lib/call/projection";
 import { type BrokerLoad, toBrokerLoad } from "@/lib/tools/sanitize";
 
@@ -78,6 +79,10 @@ describe("RateLadder", () => {
 
     expect(markup).toContain("over ceiling");
     expect(markup).not.toContain("offer 1");
+    // And the ceiling still says what it is. A breach clamps to the top of the
+    // chart, so the collision rule silenced the ceiling's own number at exactly
+    // the moment the two need to be readable side by side.
+    expect(markup).toContain(usd(load.ceilingCents));
   });
 
   it("says nothing was quoted when only another lane was", async () => {

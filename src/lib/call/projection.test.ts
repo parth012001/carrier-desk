@@ -203,6 +203,46 @@ describe("projectCall — the negotiation", () => {
     expect(view.loadRef).toBe("LD-10401");
   });
 
+  it("does not draw a second rung when a settled rate is restated", () => {
+    // A carrier who accepts and then reopens gets the agreed number back:
+    // `counter_offer` returns the round that produced it and consumes no
+    // counter. Counting answers rather than reading that round drew a second
+    // rung labelled "offer 2" while `CallState` still had one counter used —
+    // the two panes disagreeing about one event, which is what counting per
+    // load was supposed to have closed.
+    const view = projectCall([
+      trace(0, "counter_offer", {
+        args: { load_ref: "LD-10401", carrier_asked_cents: 233000 },
+        result: { action: "accept", rate_cents: 233000, round: 1, counters_remaining: 2 },
+      }),
+      trace(1, "counter_offer", {
+        args: { load_ref: "LD-10401" },
+        result: { action: "accept", rate_cents: 233000, round: 1, counters_remaining: 2 },
+      }),
+    ]);
+
+    expect(view.offers).toEqual([
+      { loadRef: "LD-10401", round: 1, rateCents: 233000, askedCents: 233000, accepted: true },
+    ]);
+  });
+
+  it("takes the round from the tool rather than from how many answers it gave", () => {
+    // The two disagree the moment one answer is a restatement, and the tool
+    // layer is the one enforcing the cap.
+    const view = projectCall([
+      trace(0, "counter_offer", {
+        args: { load_ref: "LD-10401" },
+        result: { action: "offer", rate_cents: 233000, round: 1 },
+      }),
+      trace(1, "counter_offer", {
+        args: { load_ref: "LD-10401" },
+        result: { action: "offer", rate_cents: 266000, round: 2 },
+      }),
+    ]);
+
+    expect(view.offers.map((o) => o.round)).toEqual([1, 2]);
+  });
+
   it("counts rounds per load, the way the tool layer does", () => {
     // `CallState.nextRound` is keyed by load. A global count would have the
     // ladder calling this "offer 2" while the trace pane renders the tool's own

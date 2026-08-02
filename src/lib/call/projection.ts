@@ -208,23 +208,47 @@ function applyToolCall(view: CallView, row: TraceRow): CallView {
       const rateCents = num(result.rate_cents);
       if ((action === "offer" || action === "accept") && rateCents !== null) {
         const offerLoadRef = str(argRecord.load_ref) ?? view.loadRef;
+
+        // The tool layer's own number, not one counted here.
+        //
+        // Counting answers was wrong in the one case that matters: a carrier who
+        // accepts and then reopens gets a *restatement* of the settled rate —
+        // `counter_offer` returns the round that produced it and consumes
+        // nothing — so a ladder counting replies drew a second rung and called
+        // it the next round while `CallState` still had one counter used. Two
+        // panes contradicting each other about the same event, which is the
+        // failure counting per load was supposed to have closed.
+        //
+        // Counted here only when the tool did not say, which no shipped result
+        // does; the fallback is for a row written before `round` existed.
+        const reported = num(result.round);
+        const round =
+          reported !== null && Number.isInteger(reported) && reported > 0
+            ? reported
+            : view.offers.filter((o) => o.loadRef === offerLoadRef).length + 1;
+
+        // A round already on the ladder is that same rung being restated. Flip
+        // it to agreed if this answer settled it; never draw it twice.
+        const at = view.offers.findIndex((o) => o.loadRef === offerLoadRef && o.round === round);
+        const offer: Offer = {
+          loadRef: offerLoadRef,
+          round,
+          rateCents,
+          askedCents: num(argRecord.carrier_asked_cents),
+          accepted: action === "accept",
+        };
+
         return {
           ...view,
           loadRef: offerLoadRef,
-          offers: [
-            ...view.offers,
-            {
-              loadRef: offerLoadRef,
-              // Per load, because `CallState.nextRound` is per load. A global
-              // count would let the ladder say "offer 3" for what the tool layer
-              // counted as round 1, and the trace pane renders the tool's own
-              // result — so the two panes would contradict each other.
-              round: view.offers.filter((o) => o.loadRef === offerLoadRef).length + 1,
-              rateCents,
-              askedCents: num(argRecord.carrier_asked_cents),
-              accepted: action === "accept",
-            },
-          ],
+          offers:
+            at === -1
+              ? [...view.offers, offer]
+              : view.offers.map((existing, i) =>
+                  i === at
+                    ? { ...existing, accepted: existing.accepted || action === "accept" }
+                    : existing,
+                ),
         };
       }
       const reason = str(result.reason);

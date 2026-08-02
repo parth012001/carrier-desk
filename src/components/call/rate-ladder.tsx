@@ -48,10 +48,15 @@ export function RateLadder({
    * Round one is the floor exactly, by design, so a rung landing on a marker is
    * the common case. Both render a full-width row at the same `top`, ending in
    * the same money slot — so the marker yields its value and the rung states it.
+   *
+   * A breach never silences a marker. It clamps to the top of the chart, which
+   * put it on the ceiling and hid the ceiling's own number — at exactly the
+   * moment the two numbers need to be readable side by side. A breach rung
+   * states its own money and does not stand in for the line it crossed.
    */
   const COLLISION_PCT = 4;
   const collides = (markerDepth: number) =>
-    rungs.some((rung) => Math.abs(rung.depth - markerDepth) < COLLISION_PCT);
+    rungs.some((rung) => !rung.breach && Math.abs(rung.depth - markerDepth) < COLLISION_PCT);
 
   const best = lane.reduce((top, offer) => Math.max(top, offer.rateCents), 0);
   const committed = booking?.loadRef === load.ref ? booking.rateCents : null;

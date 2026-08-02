@@ -203,6 +203,10 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
           return {
             action: "accept" as const,
             rate_cents: agreed,
+            // The round that produced this number, not a new one. Nothing was
+            // consumed here — this is a restatement — and saying so is what
+            // stops a reader downstream inferring a counter from an answer.
+            round: state.countersUsed(load_ref),
             counters_remaining: Math.max(0, MAX_COUNTERS - state.countersUsed(load_ref)),
           };
         }
@@ -243,8 +247,12 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
         return {
           action: outcome.action,
           rate_cents: outcome.rateCents,
-          // Useful for pacing the conversation, and it leaks nothing: it is a
-          // count of turns, not a distance to a number.
+          // The counter this actually was. Reported rather than left to be
+          // counted downstream: a reader that counts answers instead of counters
+          // disagrees with the tool layer the moment one of them is a
+          // restatement. Like `counters_remaining` it is a count of turns and
+          // carries no distance to any number.
+          round: outcome.round,
           counters_remaining: Math.max(0, MAX_COUNTERS - state.countersUsed(load_ref)),
         };
       }),
