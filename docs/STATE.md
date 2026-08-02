@@ -6,11 +6,14 @@
 
 ## Where we are
 
-Branch: `day-4-interface` · **Day 4 of 7 COMPLETE, and its pre-landing review closed out** ·
-`pnpm test` **502 green**, offline · typecheck + lint clean · production build clean, both API
+Branch: `main` · **Day 4 of 7 COMPLETE and MERGED**, review closed out ·
+`pnpm test` **506 green**, offline · typecheck + lint clean · production build clean, both API
 routes dynamic · `pnpm agent:smoke` and `pnpm eval` both green against live services
 
-**PR #3 is ready to land.** Nothing is outstanding on it.
+**Day 4 is merged.** PR #3 landed as `0bbc80a` on 2026-08-02, a merge commit rather than a
+squash so the commit-by-commit reasoning survives on `main` — same as PR #2. Verified *after*
+the merge, not just on the branch: suite, typecheck, lint and production build all green on the
+merge result. `day-4-interface` is deleted locally and on the remote. Nothing is outstanding.
 
 **You can watch it work now.** `/call` is a three-column console: the desk on the left (carrier,
 compliance, load, rate ladder), the conversation in the middle, the live tool trace on the right.
@@ -35,8 +38,8 @@ a failure, and a database outage was needed to reach it before a closed browser 
 #10 is **hardening, not a repair** — the numbering was correct for every path that shipped, and
 the entry claiming otherwise was wrong. See the corrected #10 below. Both mutation-tested.
 
-**Day 3 is merged.** PR #2 landed as `772174c`. The pre-landing review's remaining nine
-criticals are still listed under **Blocked / open**.
+**Day 3 is merged.** PR #2 landed as `772174c`. Its review's remaining nine criticals are still
+listed under **Blocked / open** — merging Day 4 did not close any of them.
 
 ## Done — the Day 4 review close-out
 
@@ -71,7 +74,21 @@ Then the four:
       that was held by one manual click-through.
 - [x] **The `seq` fix was documented as repairing a bug the shipped code never had**, in five
       places. Rewritten as the forward hardening it is. See #10 under *Blocked / open*.
-- [x] Suite **479 → 502**
+
+**A second pass over the close-out found two more,** which is the useful part of reviewing your
+own repair:
+
+- [x] **The ladder still disagreed with `CallState` about the round** — in the one case counting
+      per load did not cover. `counter_offer` has a sticky-accept branch: once a rate is settled,
+      reopening returns that number and consumes nothing, so a ladder counting *answers* drew a
+      second rung and called it round 2 while one counter was used. The comment claiming the two
+      matched made it worse than an omission. `counter_offer` now **reports** the round it
+      consumed, the restatement reports the round that produced the number, and `projectCall`
+      reads that instead of counting — a round already on the ladder is that rung being restated.
+- [x] **A breach was silencing the ceiling.** An over-ceiling offer clamps to the top of the
+      chart, which put it inside the collision threshold of the ceiling marker and dropped the
+      ceiling's value at exactly the moment the two numbers need to be read side by side.
+- [x] Suite **479 → 506**
 
 ## Done — Day 4
 
@@ -193,8 +210,8 @@ The general lesson, worth repeating out loud in an interview: a test that comput
 expectation from the thing under test proves nothing, and the only reliable way to find those
 is to break the code deliberately.
 
-**The review close-out ran fifteen more, all red, all reverted.** Full list in the commit
-messages. Two are worth carrying forward:
+**The review close-out ran nineteen more, all red, all reverted.** Full list in the commit
+messages. Three are worth carrying forward:
 
 - **Reverting `vitest.config.mts`'s include pattern took the suite from 26 files / 493 tests to
   25 / 490 — green, with the component test still sitting on disk.** That is the exact failure
@@ -203,6 +220,10 @@ messages. Two are worth carrying forward:
   `get_load` branch had two guards, and only one could be reached by an honest fixture; the fix
   was to change the read so each guard is separately load-bearing, not to invent a fixture the
   tool never produces. Recorded in the notes below because it generalises.
+- **The close-out's own fix needed a second review, and it earned it.** Counting offers per load
+  fixed the common case and left the sticky-accept path disagreeing — with a comment newly
+  asserting they agreed. Writing an invariant down is what makes the remaining exception a
+  defect rather than an omission, so the sentence has to be checked as hard as the code.
 
 ## Notes for the next session
 
@@ -284,8 +305,7 @@ messages. Two are worth carrying forward:
 
 ## Next command
 
-**Merge PR #3, then start Day 5 — the eval suite.** The review is closed out and nothing on the
-branch is outstanding.
+**Start Day 5 — the eval suite.** `main` is clean and green; branch from it.
 
 Day 5: carrier-simulator agent playing personas against the real agent, an LLM judge with a
 per-dimension rubric, `pnpm eval` printing a scorecard, results persisted and rendered at
