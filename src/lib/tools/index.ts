@@ -75,9 +75,11 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
         }
 
         const record = result.record;
-        state.carrierRecord = record;
         const stored = await deps.carriers.upsert(record);
-        state.carrier = stored;
+        // Only a carrier that cleared the gate becomes the caller of record.
+        // Assigning unconditionally let a blocked second lookup take the slot
+        // and be written as the carrier a load was tendered to.
+        state.rememberCarrier(mcNumber, record, stored);
 
         return {
           found: true,
@@ -145,6 +147,7 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
         "number. Returns the rate you should say out loud. You do not choose this number.",
       inputSchema: z.object({
         load_ref: z.string().describe("The load being negotiated."),
+        mc_number: z.string().describe("The MC number of the carrier you are quoting."),
         carrier_asked_cents: z
           .number()
           .int()
@@ -156,11 +159,28 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
               "Omit if they have not named a number yet.",
           ),
       }),
-      execute: traced("counter_offer", async ({ load_ref, carrier_asked_cents }) => {
-        // No rate before verification. The prompt asks for this ordering, but
-        // the model interleaves lookup_carrier with other calls in a single
+      execute: traced("counter_offer", async ({ load_ref, mc_number, carrier_asked_cents }) => {
+        // No rate before verification, and no rate to *this* carrier before
+        // this carrier is verified. The prompt asks for the ordering, but the
+        // model interleaves lookup_carrier with other calls in a single
         // parallel step, so asking is not enough — the Day 3 eval caught it
         // quoting $2,286.96 before the gate had answered.
+        //
+        // The MC argument is what scopes the check. Without it the gate could
+        // only ask "has anyone on this call cleared", so a second lookup that
+        // came back blocked was still quoted a rate. It also makes the quote
+        // attributable in the trace: every offer names who it was for.
+        const quotedMc = parseMcNumber(mc_number) ?? String(mc_number ?? "");
+        const quotedCompliance = state.complianceFor(quotedMc);
+        if (quotedCompliance === null || quotedCompliance.decision === "block") {
+          return {
+            action: "error" as const,
+            reason: "carrier_not_verified",
+            message: `Verify MC-${quotedMc} with lookup_carrier before quoting it any rate.`,
+          };
+        }
+        // Belt and braces: the per-MC check above is the real gate, but a caller
+        // of record must exist before any number is said out loud.
         if (!state.hasClearedCarrier()) {
           return {
             action: "error" as const,
@@ -173,6 +193,18 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
         if (load === null) return { action: "error" as const, reason: "load_not_found" };
         if (state.isBooked(load_ref)) {
           return { action: "error" as const, reason: "already_booked" };
+        }
+
+        // A settled number stays settled. Recomputing the schedule after an
+        // accept let a carrier reopen and be countered *upward*, which is
+        // bidding against ourselves.
+        const agreed = state.agreedRate(load_ref);
+        if (agreed !== null) {
+          return {
+            action: "accept" as const,
+            rate_cents: agreed,
+            counters_remaining: Math.max(0, MAX_COUNTERS - state.countersUsed(load_ref)),
+          };
         }
 
         const policy = {
@@ -198,6 +230,7 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
         }
 
         state.recordOffer(load_ref, outcome.rateCents);
+        if (outcome.action === "accept") state.recordAgreement(load_ref, outcome.rateCents);
         await deps.negotiations.record({
           runId: state.runId,
           loadId: load.id,
@@ -245,6 +278,12 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
           if (compliance.decision === "block") {
             return { booked: false as const, reason: "carrier_blocked" };
           }
+          // Compliance answers "is this MC clean". It does not answer "is this
+          // MC the party we are on the phone with", and the carrier row we are
+          // about to write is the answer to the second question.
+          if (!state.isVerifiedCaller(mcNumber)) {
+            return { booked: false as const, reason: "carrier_not_verified" };
+          }
 
           const decision = canBook({
             policy: {
@@ -267,7 +306,7 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
           });
           if (!covered) return { booked: false as const, reason: "load_unavailable" };
 
-          state.markBooked(load_ref, decision.rateCents);
+          state.markBooked(load_ref, load.id, decision.rateCents);
           await deps.negotiations.record({
             runId: state.runId,
             loadId: load.id,
@@ -295,13 +334,14 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
         reason: z.string().describe("Why a person is needed. One sentence."),
       }),
       execute: traced("escalate_to_human", async ({ reason }) => {
-        state.outcome = "escalated";
+        // Cannot unwind a committed booking. See CallState.setOutcome.
+        state.setOutcome("escalated");
         await deps.runs.finish({
           runId: state.runId,
-          outcome: "escalated",
+          outcome: state.outcome,
           finalRateCents: state.finalRateCents,
           carrierId: state.carrier?.id ?? null,
-          loadId: null,
+          loadId: state.bookedLoadId,
         });
         return { escalated: true, reason };
       }),
@@ -318,14 +358,23 @@ export function buildTools({ deps, state }: ToolContext): ToolSet {
       execute: traced("end_call", async ({ outcome, summary }) => {
         // A booking already set the outcome and the rate; end_call must not be
         // able to overwrite that with whatever the model believes happened.
-        if (state.outcome !== "booked") state.outcome = outcome;
+        //
+        // The reverse direction needed guarding too. `booked` is the one
+        // outcome with a committed `loads` row behind it, and the model could
+        // simply assert it: end_call({outcome: "booked"}) with no book_load
+        // wrote outcome='booked' with a null rate, a null load and no covered
+        // freight. Day 6's before/after delta counts those rows, so a model
+        // that merely believed it had booked inflated the headline number.
+        const claimed =
+          outcome === "booked" && state.finalRateCents === null ? "abandoned" : outcome;
+        state.setOutcome(claimed);
 
         await deps.runs.finish({
           runId: state.runId,
           outcome: state.outcome,
           finalRateCents: state.finalRateCents,
           carrierId: state.carrier?.id ?? null,
-          loadId: null,
+          loadId: state.bookedLoadId,
         });
 
         return { ended: true, outcome: state.outcome, summary };

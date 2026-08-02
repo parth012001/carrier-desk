@@ -63,14 +63,47 @@ describe("isValidRateCents", () => {
 });
 
 describe("the concession schedule", () => {
-  it("never reaches the ceiling, by construction", () => {
-    // This is what makes the invariant structural on the counter path rather
-    // than merely guarded: the largest fraction of the floor-to-ceiling head we
-    // will ever offer is strictly below all of it.
-    for (const fraction of CONCESSION_SCHEDULE) {
-      expect(fraction).toBeLessThan(1);
+  it("does not read the ceiling at all — move it and every offer is unchanged", () => {
+    // The structural form of the claim, and stronger than the one it replaces.
+    //
+    // The old assertion was that the top fraction is below 1.0 of the
+    // floor-to-ceiling head. That bounds the offer but does not hide the
+    // ceiling: interpolating floor→ceiling made every offer an exact affine
+    // function of it, so with the old [0, 0.5, 0.75] schedule the observed
+    // offers satisfied `ceiling = r3 + (r3 - r2)` identically. A model that was
+    // never told the ceiling could recover it to the cent from two numbers the
+    // tool layer handed it.
+    //
+    // Interpolating floor→market instead makes the ceiling an input to nothing
+    // on this path, which is a property a test can actually pin: vary the
+    // ceiling across three orders of magnitude and the offers must not move. If
+    // anyone reintroduces a ceiling term, this goes red on the first policy.
+    for (const policy of POLICIES) {
+      const offersFor = (ceilingCents: number) =>
+        Array.from({ length: MAX_COUNTERS }, (_, i) => {
+          const outcome = nextOffer({
+            policy: { ...policy, ceilingCents },
+            round: i + 1,
+            carrierAskedCents: null,
+          });
+          if (outcome.action !== "offer") throw new Error("expected an offer");
+          return outcome.rateCents;
+        });
+
+      const baseline = offersFor(policy.ceilingCents);
+      expect(offersFor(policy.marketCents)).toEqual(baseline);
+      expect(offersFor(policy.ceilingCents * 10)).toEqual(baseline);
+      expect(offersFor(policy.ceilingCents * 1000)).toEqual(baseline);
     }
-    expect(Math.max(...CONCESSION_SCHEDULE)).toBeLessThan(1);
+  });
+
+  it("tops out at market, which is what keeps every offer under the ceiling", () => {
+    // With the ceiling out of the arithmetic, the bound comes from the ordering
+    // isUsablePolicy enforces: offers reach market at most, and market <= ceiling.
+    expect(Math.max(...CONCESSION_SCHEDULE)).toBe(1);
+    for (const policy of POLICIES) {
+      expect(policy.marketCents).toBeLessThanOrEqual(policy.ceilingCents);
+    }
   });
 
   it("opens at the anchor", () => {
@@ -101,7 +134,7 @@ describe("the concession schedule", () => {
     // simply wait out. Changing it should mean re-arguing that, which is what
     // a literal assertion forces.
     expect(MAX_COUNTERS).toBe(3);
-    expect([...CONCESSION_SCHEDULE]).toEqual([0, 0.5, 0.75]);
+    expect([...CONCESSION_SCHEDULE]).toEqual([0, 0.6, 1]);
   });
 });
 
@@ -159,14 +192,21 @@ describe("nextOffer — across every seeded load", () => {
     }
   });
 
-  it("lands on market at the second counter", () => {
-    // A property of the seeded ratios (floor 0.86x, ceiling 1.14x) meeting a
-    // 0.5 concession: half the head is exactly the distance back to market.
-    // Tolerance is for independent rounding of the three columns, not slack.
+  it("closes on market at the last counter, and stays under it before that", () => {
+    // Market is the top of the ladder now, not a waypoint on the way to the
+    // ceiling. Every earlier round has to sit strictly below it, or the
+    // shrinking-concession shape is a fiction. Tolerance is for independent
+    // rounding of the three columns, not slack.
     for (const policy of POLICIES) {
-      const outcome = nextOffer({ policy, round: 2, carrierAskedCents: null });
-      if (outcome.action !== "offer") throw new Error("expected an offer");
-      expect(Math.abs(outcome.rateCents - policy.marketCents)).toBeLessThanOrEqual(2);
+      for (let round = 1; round < MAX_COUNTERS; round++) {
+        const early = nextOffer({ policy, round, carrierAskedCents: null });
+        if (early.action !== "offer") throw new Error("expected an offer");
+        expect(early.rateCents).toBeLessThan(policy.marketCents);
+      }
+
+      const last = nextOffer({ policy, round: MAX_COUNTERS, carrierAskedCents: null });
+      if (last.action !== "offer") throw new Error("expected an offer");
+      expect(Math.abs(last.rateCents - policy.marketCents)).toBeLessThanOrEqual(2);
     }
   });
 });
@@ -352,14 +392,65 @@ describe("canBook — the ceiling invariant, enumerated", () => {
   });
 
   it("rejects at exactly one cent over, and accepts at exactly the ceiling", () => {
+    // `lastOfferedCents` is set beyond the ceiling so that only the ceiling
+    // guard can reject. It is not a number the tool layer can produce — offers
+    // top out at market — which is the point: this drives the backstop
+    // directly, so deleting the ceiling check cannot leave the suite green.
     for (const policy of POLICIES) {
-      expect(canBook({ policy, rateCents: policy.ceilingCents, lastOfferedCents: null })).toEqual({
+      const lastOfferedCents = policy.ceilingCents * 4;
+
+      expect(canBook({ policy, rateCents: policy.ceilingCents, lastOfferedCents })).toEqual({
         ok: true,
         rateCents: policy.ceilingCents,
       });
-      expect(
-        canBook({ policy, rateCents: policy.ceilingCents + 1, lastOfferedCents: null }),
-      ).toEqual({ ok: false, reason: "above_ceiling" });
+      expect(canBook({ policy, rateCents: policy.ceilingCents + 1, lastOfferedCents })).toEqual({
+        ok: false,
+        reason: "above_ceiling",
+      });
+    }
+  });
+
+  it("refuses to book anything at all when no offer was ever made", () => {
+    // The regression. `isValidRateCents(null)` is false, so the whole
+    // above_last_offer branch used to fall through and a call could go straight
+    // from lookup_carrier to book_load at the full walk-away maximum, with zero
+    // negotiation and every test still green.
+    for (const policy of POLICIES) {
+      for (const rateCents of [1, policy.floorCents, policy.marketCents, policy.ceilingCents]) {
+        expect(canBook({ policy, rateCents, lastOfferedCents: null })).toEqual({
+          ok: false,
+          reason: "no_offer_made",
+        });
+      }
+    }
+  });
+
+  it("answers the same way above the offer whether or not the ceiling is in reach", () => {
+    // The oracle. A rejected booking costs nothing and consumes no counter, so
+    // the model could probe as often as it liked; with the ceiling checked
+    // first, `above_ceiling` past the maximum and `above_last_offer` below it
+    // formed a one-bit comparator that binary-searches straight to the ceiling.
+    // Checking the offer first makes every rejection above what we said carry
+    // the same code no matter where the ceiling sits.
+    for (const policy of POLICIES) {
+      const lastOfferedCents = policy.marketCents;
+      const probes = [
+        lastOfferedCents + 1,
+        Math.round((lastOfferedCents + policy.ceilingCents) / 2),
+        policy.ceilingCents,
+        policy.ceilingCents + 1,
+        policy.ceilingCents * 2,
+      ];
+
+      const reasons = new Set(
+        probes.map((rateCents) => {
+          const decision = canBook({ policy, rateCents, lastOfferedCents });
+          if (decision.ok) throw new Error(`expected a rejection at ${rateCents}`);
+          return decision.reason;
+        }),
+      );
+
+      expect([...reasons]).toEqual(["above_last_offer"]);
     }
   });
 

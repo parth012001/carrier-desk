@@ -20,14 +20,32 @@ export class CallState {
   outcome: RunOutcome = "in_progress";
   finalRateCents: number | null = null;
 
-  /** The verified carrier, once one has passed a lookup. */
+  /**
+   * The carrier we are treating as the caller: the most recent lookup that was
+   * not blocked.
+   *
+   * A blocked lookup deliberately does not land here. It used to: `carrier` was
+   * assigned on every successful lookup before the decision was consulted, so a
+   * caller who got a clean MC verified and then had the agent look up a second,
+   * blocked MC ("check my partner's number too") would see the blocked carrier
+   * take the slot — and `book_load`, which validated compliance against the MC
+   * it was handed, would then write the *blocked* carrier's id into
+   * `loads.covered_by_carrier_id`. The gate passed and the database recorded
+   * the freight against the entity the gate had just rejected.
+   */
   carrier: StoredCarrier | null = null;
   carrierRecord: CarrierRecord | null = null;
+  /** The MC behind `carrier`. Booking must match it — see `isVerifiedCaller`. */
+  verifiedMcNumber: string | null = null;
+
+  /** The load booked on this call, so the run row can point at it. */
+  bookedLoadId: string | null = null;
 
   /** What compliance said, keyed by MC. Booking re-reads this; it never re-decides. */
   private readonly compliance = new Map<string, ComplianceResult>();
   private readonly countersUsedByLoad = new Map<string, number>();
   private readonly lastOfferByLoad = new Map<string, number>();
+  private readonly agreedByLoad = new Map<string, number>();
   private readonly bookedLoads = new Set<string>();
 
   constructor(readonly runId: string) {}
@@ -36,13 +54,36 @@ export class CallState {
     this.compliance.set(mcNumber, result);
   }
 
+  /**
+   * Records who we are talking to. Only a carrier that cleared the gate can
+   * become the caller of record; a blocked lookup updates `compliance` (so
+   * check_compliance can still restate why they were refused) and nothing else.
+   */
+  rememberCarrier(mcNumber: string, record: CarrierRecord, stored: StoredCarrier): void {
+    if (this.compliance.get(mcNumber)?.decision === "block") return;
+    this.carrier = stored;
+    this.carrierRecord = record;
+    this.verifiedMcNumber = mcNumber;
+  }
+
+  /**
+   * Whether this MC is the identity that actually cleared the gate on this call.
+   *
+   * Looking a second carrier up is legitimate — carriers ask about partners and
+   * misread their own paperwork — but only one of them is the party we are
+   * tendering freight to, and it has to be the one we verified.
+   */
+  isVerifiedCaller(mcNumber: string): boolean {
+    return this.verifiedMcNumber !== null && this.verifiedMcNumber === mcNumber;
+  }
+
   /** null means we never looked this carrier up — which is not the same as "clean". */
   complianceFor(mcNumber: string): ComplianceResult | null {
     return this.compliance.get(mcNumber) ?? null;
   }
 
   /**
-   * Whether anyone on this call has passed the gate.
+   * Whether the caller has passed the gate.
    *
    * Found by the Day 3 eval: the agent quoted a rate before verification came
    * back, because the model interleaves lookup_carrier and get_load into one
@@ -54,12 +95,15 @@ export class CallState {
    * The fix belongs here rather than in the prompt for the same reason every
    * other rule does: sequencing enforced by wording is sequencing the next
    * model revision can reorder.
+   *
+   * Scoped to the caller of record rather than to "anyone looked up on this
+   * call". Scanning every compliance result meant a single clean lookup
+   * unlocked rate quoting for the rest of the conversation no matter who was
+   * asking — a blocked caller only had to get one legitimate MC read out to
+   * start hearing numbers.
    */
   hasClearedCarrier(): boolean {
-    for (const result of this.compliance.values()) {
-      if (result.decision !== "block") return true;
-    }
-    return false;
+    return this.verifiedMcNumber !== null;
   }
 
   countersUsed(loadRef: string): number {
@@ -85,10 +129,46 @@ export class CallState {
     return this.lastOfferByLoad.get(loadRef) ?? null;
   }
 
-  markBooked(loadRef: string, rateCents: number): void {
+  /**
+   * Records that the carrier named a number at or below where we were going
+   * anyway, and we took it.
+   *
+   * An agreement is sticky. Without this the deal simply evaporated: a carrier
+   * who asked $1,000 got an accept, then reopened at $4,000 on the next turn,
+   * and `nextOffer` — which recomputes from the schedule and knows nothing
+   * about what was settled — countered at the lane rate. We bid against
+   * ourselves and paid $1,659 more than the number both sides had agreed.
+   */
+  recordAgreement(loadRef: string, rateCents: number): void {
+    this.agreedByLoad.set(loadRef, rateCents);
+  }
+
+  /** The rate already settled for this load, if the carrier named one we took. */
+  agreedRate(loadRef: string): number | null {
+    return this.agreedByLoad.get(loadRef) ?? null;
+  }
+
+  markBooked(loadRef: string, loadId: string, rateCents: number): void {
     this.bookedLoads.add(loadRef);
+    this.bookedLoadId = loadId;
     this.outcome = "booked";
     this.finalRateCents = rateCents;
+  }
+
+  /**
+   * Moves the call outcome, except away from `booked`.
+   *
+   * Booking is the one outcome backed by a committed database write — a
+   * `loads` row is `covered` and the freight is tendered. Every other outcome
+   * is a model assertion about how the conversation felt. `end_call` already
+   * guarded this; `escalate_to_human` did not, so escalating after a booking
+   * (which the SDK can do in a single parallel step) overwrote a real tender
+   * with `escalated`, and a following `end_call` then saw a non-booked outcome
+   * and stamped whatever the model claimed. Only `markBooked` may set `booked`.
+   */
+  setOutcome(next: RunOutcome): void {
+    if (this.outcome === "booked") return;
+    this.outcome = next;
   }
 
   isBooked(loadRef: string): boolean {

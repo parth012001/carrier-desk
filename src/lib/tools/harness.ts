@@ -13,6 +13,7 @@ import { CallState } from "@/lib/agent/state";
 import { InMemoryTraceSink } from "@/lib/agent/trace";
 import type { AgentDeps } from "@/lib/agent/types";
 import { InMemoryCacheStore } from "@/lib/carriers/cache";
+import { parseMcNumber } from "@/lib/carriers/normalize";
 import { SocrataCarrierSource } from "@/lib/carriers/socrata";
 import type { CarrierDataSource, LookupResult } from "@/lib/carriers/types";
 
@@ -37,6 +38,41 @@ export const FIXTURES: Record<string, unknown> = {
 export const MC_ALLOWED = "186800";
 export const MC_BLOCKED = "1175378";
 export const DOT_FOR_ALLOWED = "286764";
+
+/**
+ * A second carrier that also clears the gate.
+ *
+ * The three recorded fixtures are one allow and two blocks, which cannot
+ * express "clean, but not the party we are talking to" — and that is exactly
+ * the case where booking has to refuse, because there the compliance check
+ * cannot stand in for the identity check.
+ *
+ * Replaying the active payload under a different MC does not work, correctly:
+ * `resolveCandidates` matches on the docket in the record, so the normalizer
+ * refuses to serve one carrier's filing as another's. So this takes the real
+ * normalized record and changes the one field under test — the docket number —
+ * rather than inventing an FMCSA payload. Every other field is still whatever
+ * GENERAL TRANSPORT INC actually filed.
+ */
+export const MC_ALLOWED_OTHER = "300001";
+
+/** The fixture source, plus a second clean identity for the who-are-you axis. */
+export function twoCleanCarriersSource(): CarrierDataSource {
+  const base = fixtureSource();
+  return {
+    ...base,
+    async lookupByMc(mcNumber: string): Promise<LookupResult> {
+      if (parseMcNumber(mcNumber) !== MC_ALLOWED_OTHER) return base.lookupByMc(mcNumber);
+
+      const original = await base.lookupByMc(MC_ALLOWED);
+      if (original.status !== "found") return original;
+      return {
+        ...original,
+        record: { ...original.record, mcNumber: MC_ALLOWED_OTHER },
+      };
+    },
+  };
+}
 
 /** Replays fixtures through the real normalizer. Never touches the network. */
 export function fixtureSource(fixtures = FIXTURES): CarrierDataSource {

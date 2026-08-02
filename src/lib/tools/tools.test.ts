@@ -5,8 +5,10 @@ import { MAX_COUNTERS } from "@/lib/negotiation/policy";
 import {
   DOT_FOR_ALLOWED,
   MC_ALLOWED,
+  MC_ALLOWED_OTHER,
   MC_BLOCKED,
   callTool,
+  twoCleanCarriersSource,
   makeHarness,
 } from "./harness";
 
@@ -181,7 +183,7 @@ describe("counter_offer", () => {
     // hands a rate to someone who might be blocked.
     const h = makeHarness();
 
-    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       action: string;
       reason: string;
     };
@@ -194,12 +196,39 @@ describe("counter_offer", () => {
     const h = makeHarness();
     await callTool(h.tools, "lookup_carrier", { mc_number: MC_BLOCKED });
 
-    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
-      action: string;
-      reason: string;
-    };
+    const result = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_BLOCKED,
+    })) as { action: string; reason: string };
 
     expect(result).toMatchObject({ action: "error", reason: "carrier_not_verified" });
+  });
+
+  it("refuses a blocked carrier even when someone clean was looked up too", async () => {
+    // The regression. The gate scanned every compliance result on the call and
+    // returned true if any was not blocked, so one clean lookup unlocked rate
+    // quoting for everyone — including the carrier the gate had just refused.
+    // Scoping it needed the MC on the tool, not just better state: without an
+    // argument naming who is being quoted, the check can only ever be call-wide.
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_BLOCKED });
+
+    const blocked = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_BLOCKED,
+    })) as { action: string; reason: string };
+
+    expect(blocked).toMatchObject({ action: "error", reason: "carrier_not_verified" });
+    expect(h.state.countersUsed(REF)).toBe(0);
+    expect(h.negotiations.entries).toHaveLength(0);
+
+    // And the carrier who did clear is still quotable.
+    const cleared = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+    })) as { action: string };
+    expect(cleared.action).toBe("offer");
   });
 
   it("quotes to a flagged carrier, who is allowed to haul", async () => {
@@ -208,7 +237,7 @@ describe("counter_offer", () => {
     const h = makeHarness();
     await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED, claimed_dot: "9999999" });
 
-    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       action: string;
     };
 
@@ -219,7 +248,7 @@ describe("counter_offer", () => {
     const h = await verified();
     const load = h.loads.snapshot(REF)!;
 
-    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       action: string;
       rate_cents: number;
       counters_remaining: number;
@@ -238,6 +267,7 @@ describe("counter_offer", () => {
     for (let i = 0; i < MAX_COUNTERS; i++) {
       const result = (await callTool(h.tools, "counter_offer", {
         load_ref: REF,
+        mc_number: MC_ALLOWED,
         carrier_asked_cents: load.rateCeilingCents * 2,
       })) as { action: string; rate_cents: number };
       expect(result.action).toBe("offer");
@@ -246,6 +276,7 @@ describe("counter_offer", () => {
 
     const beyond = (await callTool(h.tools, "counter_offer", {
       load_ref: REF,
+      mc_number: MC_ALLOWED,
       carrier_asked_cents: load.rateCeilingCents * 2,
     })) as { action: string; reason: string };
 
@@ -262,6 +293,7 @@ describe("counter_offer", () => {
 
     const result = (await callTool(h.tools, "counter_offer", {
       load_ref: REF,
+      mc_number: MC_ALLOWED,
       carrier_asked_cents: bargain,
     })) as { action: string; rate_cents: number };
 
@@ -272,21 +304,21 @@ describe("counter_offer", () => {
     // There is nothing to consume: we did not say a number.
     const h = await verified();
     for (let i = 0; i < MAX_COUNTERS; i++) {
-      await callTool(h.tools, "counter_offer", { load_ref: REF });
+      await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED });
     }
 
     const before = h.state.countersUsed(REF);
-    await callTool(h.tools, "counter_offer", { load_ref: REF });
+    await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED });
 
     expect(h.state.countersUsed(REF)).toBe(before);
   });
 
   it("counts counters per load, so a second load starts fresh", async () => {
     const h = await verified();
-    await callTool(h.tools, "counter_offer", { load_ref: REF });
-    await callTool(h.tools, "counter_offer", { load_ref: REF });
+    await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED });
+    await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED });
 
-    const other = (await callTool(h.tools, "counter_offer", { load_ref: "LD-10401" })) as {
+    const other = (await callTool(h.tools, "counter_offer", { load_ref: "LD-10401", mc_number: MC_ALLOWED })) as {
       counters_remaining: number;
     };
 
@@ -295,7 +327,11 @@ describe("counter_offer", () => {
 
   it("records every offer so policy can be proven afterwards", async () => {
     const h = await verified();
-    await callTool(h.tools, "counter_offer", { load_ref: REF, carrier_asked_cents: 999_999 });
+    await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      carrier_asked_cents: 999_999,
+    });
 
     expect(h.negotiations.entries).toHaveLength(1);
     expect(h.negotiations.entries[0]).toMatchObject({
@@ -309,7 +345,7 @@ describe("counter_offer", () => {
   it("refuses to quote a load that is not on the board", async () => {
     const h = await verified();
 
-    const result = (await callTool(h.tools, "counter_offer", { load_ref: "LD-00000" })) as {
+    const result = (await callTool(h.tools, "counter_offer", { load_ref: "LD-00000", mc_number: MC_ALLOWED })) as {
       action: string;
       reason: string;
     };
@@ -327,7 +363,7 @@ describe("book_load", () => {
 
   it("books a verified carrier at an offered rate", async () => {
     const h = await verifiedHarness();
-    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       rate_cents: number;
     };
 
@@ -358,7 +394,7 @@ describe("book_load", () => {
   it("refuses a blocked carrier even at a perfectly legal rate", async () => {
     const h = makeHarness();
     await callTool(h.tools, "lookup_carrier", { mc_number: MC_BLOCKED });
-    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       rate_cents: number;
     };
 
@@ -374,7 +410,7 @@ describe("book_load", () => {
 
   it("refuses a load someone else already took", async () => {
     const h = await verifiedHarness();
-    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       rate_cents: number;
     };
     await callTool(h.tools, "book_load", {
@@ -406,7 +442,7 @@ describe("end_call and escalate_to_human", () => {
     // The model's belief about what happened is not the record. A booking is.
     const h = makeHarness();
     await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
-    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF })) as {
+    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
       rate_cents: number;
     };
     await callTool(h.tools, "book_load", {
@@ -440,7 +476,7 @@ describe("the trace", () => {
 
     await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
     await callTool(h.tools, "get_load", { load_ref: REF });
-    await callTool(h.tools, "counter_offer", { load_ref: REF });
+    await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED });
 
     const rows = h.trace.toolCalls();
     expect(rows.map((r) => r.name)).toEqual(["lookup_carrier", "get_load", "counter_offer"]);
@@ -464,5 +500,206 @@ describe("the trace", () => {
 
     expect(h.trace.toolCalls()).toHaveLength(1);
     expect(h.trace.toolCalls()[0].result).toMatchObject({ booked: false });
+  });
+});
+
+/**
+ * A second carrier on the call is ordinary — carriers ask about partners and
+ * misread their own paperwork. Which of them the freight is tendered to is not
+ * ordinary, and every test below is a regression: each of these shipped green.
+ */
+describe("two carriers on one call", () => {
+  async function offerOn(h: Awaited<ReturnType<typeof makeHarness>>, ref = REF) {
+    return (await callTool(h.tools, "counter_offer", { load_ref: ref, mc_number: MC_ALLOWED })) as {
+      action: string;
+      rate_cents: number;
+    };
+  }
+
+  it("books against the carrier that cleared, not the one looked up last", async () => {
+    // The defect: `state.carrier` was assigned on every successful lookup
+    // before the decision was consulted, so the blocked carrier took the slot
+    // and `loads.covered_by_carrier_id` recorded the freight against the entity
+    // the gate had just rejected. The tool result said otherwise.
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_BLOCKED });
+
+    const cleared = h.carriers.snapshot(MC_ALLOWED);
+    const blocked = h.carriers.snapshot(MC_BLOCKED);
+    expect(blocked).not.toBeNull();
+
+    const offer = await offerOn(h);
+    const result = (await callTool(h.tools, "book_load", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      rate_cents: offer.rate_cents,
+    })) as { booked: boolean };
+
+    expect(result.booked).toBe(true);
+    expect(h.loads.snapshot(REF)?.coveredByCarrierId).toBe(cleared?.id);
+    expect(h.loads.snapshot(REF)?.coveredByCarrierId).not.toBe(blocked?.id);
+  });
+
+  it("refuses to book an MC that is clean but is not the caller we verified", async () => {
+    // Compliance answers "is this MC clean". It does not answer "is this MC the
+    // party we are on the phone with", and the carrier row book_load writes is
+    // the answer to the second question. Both MCs here clear the gate, so the
+    // block check cannot cover for the identity check.
+    const h = makeHarness({ source: twoCleanCarriersSource() });
+
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED_OTHER });
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+
+    expect(h.state.complianceFor(MC_ALLOWED_OTHER)?.decision).toBe("allow");
+
+    const offer = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+    })) as { rate_cents: number };
+
+    const result = (await callTool(h.tools, "book_load", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED_OTHER,
+      rate_cents: offer.rate_cents,
+    })) as { booked: boolean; reason: string };
+
+    expect(result).toMatchObject({ booked: false, reason: "carrier_not_verified" });
+    expect(h.loads.snapshot(REF)?.status).toBe("available");
+  });
+
+  it("does not treat a lookup that failed to persist as a verified caller", async () => {
+    // `rememberCompliance` runs before the carrier upsert, so a store that
+    // throws leaves the gate's answer recorded with no carrier of record behind
+    // it. Quoting off the compliance map alone would hand out a rate with
+    // nothing to book it against.
+    const h = makeHarness();
+    h.deps.carriers.upsert = async () => {
+      throw new Error("neon unavailable");
+    };
+
+    await expect(
+      callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED }),
+    ).rejects.toThrow("neon unavailable");
+
+    expect(h.state.complianceFor(MC_ALLOWED)?.decision).toBe("allow");
+    expect(h.state.hasClearedCarrier()).toBe(false);
+
+    const result = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+    })) as { action: string; reason: string };
+
+    expect(result).toMatchObject({ action: "error", reason: "carrier_not_verified" });
+  });
+
+  it("does not let one clean lookup unlock quoting for a blocked caller", async () => {
+    // `hasClearedCarrier` scanned every compliance result on the call and
+    // returned true if any was not blocked, so a blocked caller only had to get
+    // one legitimate MC read out to start hearing rates.
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_BLOCKED });
+
+    const refused = await offerOn(h);
+    expect(refused).toMatchObject({ action: "error", reason: "carrier_not_verified" });
+    expect(h.negotiations.entries).toHaveLength(0);
+  });
+});
+
+describe("counter_offer — an agreement is sticky", () => {
+  it("does not counter upward after taking the carrier's number", async () => {
+    // The defect: `nextOffer` recomputes from the schedule and knows nothing
+    // about what was settled, so a carrier who accepted low and then reopened
+    // was countered at the lane rate. We bid against ourselves.
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+
+    const lowball = 100_00;
+    const accepted = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      carrier_asked_cents: lowball,
+    })) as { action: string; rate_cents: number };
+
+    expect(accepted).toMatchObject({ action: "accept", rate_cents: lowball });
+
+    const reopened = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      carrier_asked_cents: 400_000,
+    })) as { action: string; rate_cents: number };
+
+    expect(reopened).toMatchObject({ action: "accept", rate_cents: lowball });
+
+    // And the settled number is the most that can be booked.
+    const overpay = (await callTool(h.tools, "book_load", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      rate_cents: lowball + 1,
+    })) as { booked: boolean; reason: string };
+
+    expect(overpay).toMatchObject({ booked: false, reason: "above_last_offer" });
+  });
+});
+
+describe("the run outcome is not the model's to assert", () => {
+  async function bookedHarness() {
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REF, mc_number: MC_ALLOWED })) as {
+      rate_cents: number;
+    };
+    const booked = (await callTool(h.tools, "book_load", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      rate_cents: offer.rate_cents,
+    })) as { booked: boolean };
+
+    expect(booked.booked).toBe(true);
+    return { h, rateCents: offer.rate_cents };
+  }
+
+  it("escalating after a booking cannot unwind it", async () => {
+    // `end_call` guarded this; `escalate_to_human` set the outcome
+    // unconditionally, so escalating overwrote a committed tender — and a
+    // following end_call then saw a non-booked outcome and stamped whatever the
+    // model claimed. The SDK can emit both tools in one parallel step.
+    const { h, rateCents } = await bookedHarness();
+
+    await callTool(h.tools, "escalate_to_human", { reason: "carrier disputed the rate" });
+    expect(h.state.outcome).toBe("booked");
+
+    await callTool(h.tools, "end_call", { outcome: "abandoned", summary: "hung up" });
+
+    expect(h.state.outcome).toBe("booked");
+    expect(h.runs.outcome()).toBe("booked");
+    expect(h.runs.finished.at(-1)?.finalRateCents).toBe(rateCents);
+  });
+
+  it("points the run row at the load it actually booked", async () => {
+    // `loadId: null` was passed at both call sites, so `runs.load_id` was never
+    // non-null and no run could be joined to the freight it covered.
+    const { h } = await bookedHarness();
+    await callTool(h.tools, "end_call", { outcome: "booked", summary: "done" });
+
+    expect(h.runs.finished.at(-1)?.loadId).toBe(h.loads.snapshot(REF)?.id);
+  });
+
+  it("refuses a booking the model merely believes happened", async () => {
+    // end_call({outcome: "booked"}) with no book_load wrote outcome='booked'
+    // with a null rate, a null load and no covered freight. Day 6's delta
+    // counts those rows.
+    const h = makeHarness();
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+
+    const result = (await callTool(h.tools, "end_call", {
+      outcome: "booked",
+      summary: "we agreed on the phone",
+    })) as { outcome: string };
+
+    expect(result.outcome).toBe("abandoned");
+    expect(h.state.outcome).toBe("abandoned");
+    expect(h.runs.outcome()).toBe("abandoned");
+    expect(h.loads.snapshot(REF)?.status).toBe("available");
   });
 });

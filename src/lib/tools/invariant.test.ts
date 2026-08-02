@@ -171,6 +171,7 @@ describe("book_load — the ceiling invariant, enumerated", () => {
     // "You're $47 over" is an oracle a model can binary-search.
     const h = await harnessWith("allow", REFS[0], false);
     const load = h.loads.snapshot(REFS[0])!;
+    h.state.recordOffer(REFS[0], load.rateCeilingCents * 4);
 
     const result = await callTool(h.tools, "book_load", {
       load_ref: REFS[0],
@@ -179,6 +180,57 @@ describe("book_load — the ceiling invariant, enumerated", () => {
     });
 
     expect(JSON.stringify(result)).toBe('{"booked":false,"reason":"above_ceiling"}');
+  });
+
+  it("refuses to book at all before a number has been offered", async () => {
+    // The regression: with no counter, the above_last_offer guard fell through
+    // entirely and this booked at the walk-away maximum to the cent.
+    for (const ref of REFS) {
+      const h = await harnessWith("allow", ref, false);
+      const load = h.loads.snapshot(ref)!;
+
+      const result = (await callTool(h.tools, "book_load", {
+        load_ref: ref,
+        mc_number: MC_ALLOWED,
+        rate_cents: load.rateCeilingCents,
+      })) as { booked: boolean; reason: string };
+
+      expect(result, ref).toMatchObject({ booked: false, reason: "no_offer_made" });
+      expect(h.loads.snapshot(ref)?.status).toBe("available");
+      expect(h.loads.snapshot(ref)?.bookedRateCents).toBeNull();
+    }
+  });
+
+  it("gives one reason for every rate above what it offered, whatever the ceiling", async () => {
+    // The oracle, at the tool layer. A rejected booking consumes no counter and
+    // costs nothing, so the reason code must not vary with where the ceiling
+    // sits or the model can walk rates upward until the code changes.
+    const h = await harnessWith("allow", REFS[0], false);
+    const load = h.loads.snapshot(REFS[0])!;
+
+    const offer = (await callTool(h.tools, "counter_offer", { load_ref: REFS[0], mc_number: MC_ALLOWED })) as {
+      rate_cents: number;
+    };
+
+    const reasons = new Set<string>();
+    for (const rate_cents of [
+      offer.rate_cents + 1,
+      Math.round((offer.rate_cents + load.rateCeilingCents) / 2),
+      load.rateCeilingCents,
+      load.rateCeilingCents + 1,
+      load.rateCeilingCents * 3,
+    ]) {
+      const result = (await callTool(h.tools, "book_load", {
+        load_ref: REFS[0],
+        mc_number: MC_ALLOWED,
+        rate_cents,
+      })) as { booked: boolean; reason: string };
+
+      expect(result.booked).toBe(false);
+      reasons.add(result.reason);
+    }
+
+    expect([...reasons]).toEqual(["above_last_offer"]);
   });
 });
 
@@ -198,7 +250,7 @@ describe("the model never receives the ceiling", () => {
       // number it was never told proves nothing about whether we leaked it.
       const ask = load.rateMarketCents * 2;
       const counter = {
-        call: [{ tool: "counter_offer", input: { load_ref: ref, carrier_asked_cents: ask } }],
+        call: [{ tool: "counter_offer", input: { load_ref: ref, mc_number: MC_ALLOWED, carrier_asked_cents: ask } }],
       };
       const model = scriptedModel([
         { call: [{ tool: "lookup_carrier", input: { mc_number: MC_ALLOWED } }] },

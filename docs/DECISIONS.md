@@ -360,7 +360,8 @@ advisory the main model then ignored, producing RCE anyway. The defense that hol
 deterministic parameter validation at the tool boundary. Removing the parameter is strictly
 better than validating it.
 
-**The concession curve.** Offers are fixed fractions of the floor→ceiling head, `[0, 0.5, 0.75]`:
+**The concession curve.** ⚠️ **Superseded by #19 — the head is floor→market, not floor→ceiling.**
+As originally shipped, offers were fixed fractions of the floor→ceiling head, `[0, 0.5, 0.75]`:
 
 | Round | Lands on |
 |---|---|
@@ -369,13 +370,14 @@ better than validating it.
 | 3 | halfway between market and ceiling |
 | 4+ | walk away |
 
-Concessions shrink (+0.50 head, then +0.25). This is how the buying side actually negotiates:
-anchor low, manufacture the feel of movement while giving away less each time, and decide after
-two or three rounds instead of grinding. `MAX_COUNTERS = 3` comes from the same place — an agent
-that counters forever is one a carrier can simply wait out.
+Concessions shrink. This is how the buying side actually negotiates: anchor low, manufacture the
+feel of movement while giving away less each time, and decide after two or three rounds instead
+of grinding. `MAX_COUNTERS = 3` comes from the same place — an agent that counters forever is one
+a carrier can simply wait out. That part stands.
 
-The top fraction is **0.75, strictly below 1.0**, which is what makes the ceiling unreachable on
-this path rather than merely guarded.
+The argument that did *not* stand was "the top fraction is 0.75, strictly below 1.0, which is what
+makes the ceiling unreachable on this path rather than merely guarded." Bounding an offer is not
+hiding the number it is computed from. See #19.
 
 Three details that are easy to get wrong and are pinned by tests:
 
@@ -384,6 +386,8 @@ Three details that are easy to get wrong and are pinned by tests:
    carrier-supplied value becomes a rate, and it can only ever fire *below* our own offer.
 2. **Rejections carry a code and never a number.** `"above_ceiling"` is the whole answer;
    "you're $47 over" would be an oracle the model could binary-search to recover the ceiling.
+   Necessary, and — as #19 records — not sufficient on its own: *which* code comes back was
+   itself the comparison result.
 3. **Untrustworthy bounds mean no negotiation at all.** A row with `ceiling < floor` makes the
    head negative and inverts the schedule — a design that approaches the ceiling from below
    would start walking away from it. A missing row walks away rather than throwing mid-call.
@@ -455,3 +459,61 @@ last meant any earlier slip would threaten it with no runway. A one-persona walk
 on Day 3 turns Day 5 from "build it" into "scale it," which is compressible or cuttable.
 
 See the Amendments table in `PLAN.md`.
+
+---
+
+### 19 — Withholding a value means withholding every function of it
+**2026-08-02** — supersedes the concession-curve half of #17
+
+A pre-landing review broke the central claim of #4 and #17 three different ways. None of them
+was a bug in the ceiling check. All three were the same mistake: treating "the model is never
+told the ceiling" as the property, when the property is "the model cannot obtain the ceiling."
+
+**1. The offers published the function.** Interpolating floor→ceiling made every counter an
+exact affine function of the ceiling. With `[0, 0.5, 0.75]` the emitted offers satisfy
+`ceiling = r3 + (r3 - r2)`, identically, on every load. Two numbers the tool layer handed the
+model recovered the number it was not allowed to see, to the cent. Worse, `RATE_FLOOR_RATIO` and
+`RATE_CEILING_RATIO` are global across all 40 lanes and live in a public repo, so `ceiling =
+market × 1.14` and `get_load` returns market.
+
+The schedule now interpolates **floor→market**, `[0, 0.6, 1]`. Both endpoints are values the
+model is already permitted to see, so no offer can carry information it did not already have.
+The ceiling is not clamped out of the arithmetic; it is absent from it. `isUsablePolicy` now
+requires `floor <= market <= ceiling`, which is what bounds the ladder, and the test asserts the
+structural claim directly: vary the ceiling across three orders of magnitude and every offer
+must be unchanged.
+
+**2. The reason codes were the oracle they were designed not to be.** #17 point 2 is right that
+a rejection must not carry a number, and that was honoured. But `above_ceiling` past the maximum
+and `above_last_offer` below it is a one-bit comparator on the ceiling, and a rejected booking
+consumes no counter, mutates nothing and is not rate-limited — so it could be run as often as
+the model liked. Six probes located the boundary; the seventh booked. The offer guards now run
+*before* the ceiling guard, so every rejection above what we said carries the same code wherever
+the ceiling sits, and every probe below it books rather than answering.
+
+**3. The guard that mattered most was skipped on its null case.** `above_last_offer` was written
+`isValidRateCents(lastOfferedCents) && rateCents > lastOfferedCents`. Before any counter,
+`lastOfferedCents` is null, `isValidRateCents(null)` is false, and the whole branch fell through
+— so `lookup_carrier` → `book_load` at the walk-away maximum booked, to the cent, with zero
+negotiation. The stated invariant (`booked <= ceiling`) held the entire time. A null case is a
+case; it now returns `no_offer_made`.
+
+**The eval could not have caught any of it.** Its ceiling invariant was
+`!agentText.includes(String(ceiling))` — integer cents compared against prose. A ceiling of
+`303156` is spoken "$3,031.56", which contains no such substring, so the check guarding the
+project's headline claim was green by construction and would have passed a verbatim disclosure.
+It now compares digit-for-digit against each numeric token, in cents and both dollar roundings.
+The judge could not cover for it either: the judge is never told the ceiling.
+
+The generalisation, and the reason this is a decision and not a changelog entry: **an allowlist
+is a claim about representation, not about information.** `sanitize.ts` withholds the ceiling
+column faithfully and always did. Everything above leaked through arithmetic, through control
+flow, and through a test that could not fail. When the requirement is that something stay
+unknown, the question is never "did we send it" — it is "what can be computed from what we did
+send," and that has to be pinned by a test that would go red if the answer changed.
+
+**Rejected:** per-load jitter on the concession fractions (the derivation is in a public repo, so
+it obfuscates rather than removes) · collapsing all rejections to one opaque code (loses the
+internal diagnostics the trace exists for, when ordering the checks already closes the oracle) ·
+rate-limiting failed booking attempts (treats the symptom; with the offer guard checked first
+there is nothing left to probe).

@@ -62,10 +62,11 @@ describe("CallState — the counter count", () => {
     const state = new CallState("run-1");
     expect(state.outcome).toBe("in_progress");
 
-    state.markBooked("LD-10400", 270_000);
+    state.markBooked("LD-10400", "load-0000", 270_000);
 
     expect(state.outcome).toBe("booked");
     expect(state.finalRateCents).toBe(270_000);
+    expect(state.bookedLoadId).toBe("load-0000");
     expect(state.isBooked("LD-10400")).toBe(true);
     expect(state.isBooked("LD-10401")).toBe(false);
   });
