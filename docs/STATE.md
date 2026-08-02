@@ -142,13 +142,14 @@ including two wrong-allows, and this branch is bigger.
 
 Ranked. Each was confirmed by reading the code; several were reproduced against `makeHarness()`.
 
-1. **A trace-write failure turns a committed booking into a reported failure.** `withTrace`
-   awaits `sink.write` inside the `try`, *after* `execute` succeeded, so a Neon blip routes a
-   successful `book_load` into the catch, discards the return value and rethrows — the load is
-   `covered` in Postgres while the model is told it failed. The catch's own `sink.write` then
-   throws against the same dead sink, so `throw error` never runs and the real exception is
-   masked. Fix: wrap both writes in their own try/catch so tracing can never change a tool's
-   outcome. `trace.ts:73`.
+1. ~~**A trace-write failure turns a committed booking into a reported failure.**~~ **FIXED on
+   Day 4.** Both writes now go through `writeTrace`, which owns its own try/catch, so a trace
+   row can never change the outcome of the thing it describes. A dropped row is logged rather
+   than swallowed. The same fix was applied to `runCall`'s two direct `trace.write` calls —
+   `onStepFinish`'s rejection propagates out of `generateText`, so a failing write on step 4
+   could abort a run whose `book_load` on step 3 had already committed. Day 4 is what forced
+   it: the live sink enqueues onto an HTTP stream, so closing a tab reaches the same path a
+   Neon outage used to. Three regression tests, all confirmed to go red against the old code.
 2. **`book_load` commits before its bookkeeping.** `cover()` writes `covered`, then
    `negotiations.record` can throw → the SDK returns a tool-error → the agent tells the carrier
    it failed; the retry hits `load_unavailable`. Same shape in `counter_offer`, where

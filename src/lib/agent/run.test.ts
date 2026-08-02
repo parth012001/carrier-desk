@@ -1,11 +1,11 @@
 import { type ToolSet, tool } from "ai";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { scriptedModel } from "@/test/fake-model";
 
 import { DEFAULT_MAX_STEPS, runCall } from "./run";
-import { InMemoryTraceSink, withTrace } from "./trace";
+import { InMemoryTraceSink, type TraceSink, withTrace } from "./trace";
 
 /**
  * The loop, driven by a scripted model. No live API — the network guard in
@@ -215,5 +215,36 @@ describe("runCall — the trace", () => {
     expect(sink.events.map((e) => e.seq)).toEqual(
       Array.from({ length: sink.events.length }, (_, i) => i),
     );
+  });
+
+  it("completes the call even when every trace write fails", async () => {
+    // `runCall` writes the user turn before the loop and each assistant turn
+    // from `onStepFinish`, whose rejection propagates out of `generateText`.
+    // So a sink that dies partway through a call could abort a run whose
+    // earlier `book_load` step had already committed a load to `covered`.
+    //
+    // Streaming the trace to a browser makes that reachable by closing a tab,
+    // which is why it is asserted at this level and not only around withTrace.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const dead: TraceSink = {
+      async write() {
+        throw new Error("stream closed by client");
+      },
+    };
+    const model = scriptedModel([
+      { call: [{ tool: "get_load", input: { load_ref: "LD-10400" } }] },
+      { say: "Still available. Want it?" },
+    ]);
+
+    const result = await runCall({
+      model,
+      tools: toolsWith(new InMemoryTraceSink()),
+      messages: [{ role: "user", content: "LD-10400?" }],
+      trace: dead,
+    });
+
+    expect(result.text).toBe("Still available. Want it?");
+    expect(result.toolCalls).toEqual(["get_load"]);
+    vi.restoreAllMocks();
   });
 });

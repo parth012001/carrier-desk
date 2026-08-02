@@ -1,6 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InMemoryTraceSink, withTrace } from "./trace";
+import { InMemoryTraceSink, type TraceSink, withTrace } from "./trace";
+
+/** A sink whose backing store is gone: a Neon blip, or a closed HTTP stream. */
+class DeadTraceSink implements TraceSink {
+  attempts = 0;
+
+  async write(): Promise<void> {
+    this.attempts++;
+    throw new Error("Neon connect timeout");
+  }
+}
 
 describe("withTrace", () => {
   it("records the call with its args, result and duration", async () => {
@@ -82,5 +92,54 @@ describe("withTrace", () => {
     expect(sink.events).toHaveLength(3);
     expect(sink.toolCalls()).toHaveLength(1);
     expect(sink.toolCalls()[0].name).toBe("lookup_carrier");
+  });
+});
+
+describe("withTrace, when the sink itself fails", () => {
+  // A trace row is a record of work, never part of it. These two tests are the
+  // whole reason `writeTrace` exists; both of them fail against a `withTrace`
+  // that awaits `sink.write` inside the same `try` as `execute`.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns the tool's result unchanged when the trace write fails", async () => {
+    // The booking bug. `book_load` returns `{booked: true}` and `cover()` has
+    // already written `covered` to Postgres. If the trace write can reroute
+    // that into the catch, the load is booked in the database while the model
+    // is told it failed — and the carrier is told to try again.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const sink = new DeadTraceSink();
+    const booked = { booked: true as const, load_ref: "LD-10401", rate_cents: 266000 };
+    const traced = withTrace("book_load", sink, async () => booked);
+
+    await expect(traced({ load_ref: "LD-10401" })).resolves.toEqual(booked);
+    expect(sink.attempts).toBe(1);
+  });
+
+  it("propagates the tool's error, not the sink's, when both fail", async () => {
+    // The masking bug. The catch's own `sink.write` threw against the same dead
+    // sink, so `throw error` never ran and whoever was debugging saw the
+    // tracing failure instead of the one that actually broke the call.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const sink = new DeadTraceSink();
+    const traced = withTrace("book_load", sink, async () => {
+      throw new Error("loads.cover deadlocked");
+    });
+
+    await expect(traced({})).rejects.toThrow("loads.cover deadlocked");
+    expect(sink.attempts).toBe(1);
+  });
+
+  it("reports a dropped row rather than swallowing it silently", async () => {
+    // Observability is a feature here, so a hole in the trace has to be visible
+    // to whoever reads the logs. Just never to the tool that was traced.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sink = new DeadTraceSink();
+
+    await withTrace("lookup_carrier", sink, async () => ({ decision: "allow" }))({});
+
+    expect(spy).toHaveBeenCalledOnce();
+    expect(spy.mock.calls[0].join(" ")).toContain("lookup_carrier");
   });
 });

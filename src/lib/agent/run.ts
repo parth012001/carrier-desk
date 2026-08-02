@@ -2,7 +2,7 @@ import { type LanguageModel, type ModelMessage, type ToolSet, generateText, hasT
 
 import { AGENT_PROVIDER_OPTIONS, cachedInstructions } from "./models";
 import { SYSTEM_PROMPT } from "./prompt";
-import type { TraceSink } from "./trace";
+import { type TraceSink, writeTrace } from "./trace";
 
 /**
  * The headless conversation loop.
@@ -68,9 +68,14 @@ export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
 
   // The carrier's turn goes in the trace before anything acts on it, so a run
   // that crashes mid-call still shows what was said to it.
+  // `writeTrace`, not `trace.write`: a sink that throws must never be able to
+  // fail the call it is describing. In `onStepFinish` below that is not
+  // theoretical — the callback's rejection propagates out of `generateText`,
+  // so a trace write failing on step 4 would abort a run whose `book_load` on
+  // step 3 had already committed.
   const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
   if (lastUserMessage) {
-    await trace.write({ type: "user_message", result: lastUserMessage.content });
+    await writeTrace(trace, { type: "user_message", result: lastUserMessage.content });
   }
 
   const result = await generateText({
@@ -86,7 +91,7 @@ export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
     // it is why a runaway loop costs a bounded number of API calls.
     stopWhen: [isStepCount(maxSteps), hasToolCall(...TERMINAL_TOOLS)],
     onStepFinish: async ({ text }) => {
-      if (text.trim() !== "") await trace.write({ type: "assistant_message", result: text });
+      if (text.trim() !== "") await writeTrace(trace, { type: "assistant_message", result: text });
     },
   });
 

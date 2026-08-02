@@ -50,6 +50,38 @@ export class NullTraceSink implements TraceSink {
 }
 
 /**
+ * Writes a trace row without letting the write affect the caller.
+ *
+ * **A trace row is a record of work, never part of it.** Use this rather than
+ * calling `sink.write` directly on any path that also does something real.
+ *
+ * The rule exists because breaking it corrupts bookings. `withTrace` used to
+ * await `sink.write` inside the same `try` as `execute`, so a sink failure
+ * *after* a successful `book_load` routed a committed booking into the catch:
+ * the return value was discarded and the error rethrown, leaving the model told
+ * the booking failed while the load sat `covered` in Postgres. The catch's own
+ * write then threw against the same dead sink, so `throw error` never ran and
+ * the original exception was masked by the tracing one.
+ *
+ * That needed a database outage to reach. Streaming the trace to a browser
+ * makes it routine: the live sink enqueues onto an HTTP stream, and enqueueing
+ * onto a stream whose reader has navigated away throws. Closing a tab must not
+ * be able to unbook freight.
+ */
+export async function writeTrace(sink: TraceSink, event: TraceEventInput): Promise<void> {
+  try {
+    await sink.write(event);
+  } catch (error) {
+    // Dropped, but not silent. A trace with a hole in it has to be visible to
+    // whoever reads the logs — just never to the code that was being traced.
+    console.error(
+      `[trace] dropped a ${event.name ?? event.type} row:`,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+}
+
+/**
  * Wraps a tool's `execute` so that calling it writes a trace row.
  *
  * A tool that throws still writes its row, with the error as the result, and
@@ -70,7 +102,7 @@ export function withTrace<Args, Result>(
     const startedAt = performance.now();
     try {
       const result = await execute(args);
-      await sink.write({
+      await writeTrace(sink, {
         type: "tool_call",
         name,
         args,
@@ -79,7 +111,7 @@ export function withTrace<Args, Result>(
       });
       return result;
     } catch (error) {
-      await sink.write({
+      await writeTrace(sink, {
         type: "tool_call",
         name,
         args,
