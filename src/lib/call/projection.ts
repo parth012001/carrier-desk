@@ -53,6 +53,16 @@ export type CarrierView = {
 };
 
 export type Offer = {
+  /**
+   * Which load this offer was made against.
+   *
+   * Load-bearing, not bookkeeping. The ladder plots offers against one load's
+   * band, and an offer carried over from a different lane lands somewhere its
+   * money does not mean anything — above that band it clamps onto the ceiling
+   * rule, which is the one mark on the screen that is supposed to be unreachable.
+   */
+  loadRef: string | null;
+  /** Counted per load, so it matches the round `CallState` actually enforced. */
   round: number;
   rateCents: number;
   /** What the carrier asked for on the turn that produced this offer, if they named one. */
@@ -143,6 +153,18 @@ function readCarrier(result: Record<string, unknown>): CarrierView | null {
   };
 }
 
+/**
+ * A tool that did not do the thing it was asked to do.
+ *
+ * `withTrace` records a thrown tool as `{ error }`, so the failure arrives here
+ * looking like any other result. Reading the error as a refusal puts it on the
+ * screen instead of letting the pane infer success from the absence of a marker.
+ */
+function refused(view: CallView, tool: string, result: Record<string, unknown>): CallView {
+  const reason = str(result.error) ?? str(result.reason);
+  return reason === null ? view : { ...view, refusals: [...view.refusals, { tool, reason }] };
+}
+
 function applyToolCall(view: CallView, row: TraceRow): CallView {
   const { name, args, result } = row;
   if (!isRecord(result)) return view;
@@ -175,13 +197,19 @@ function applyToolCall(view: CallView, row: TraceRow): CallView {
       const action = str(result.action);
       const rateCents = num(result.rate_cents);
       if ((action === "offer" || action === "accept") && rateCents !== null) {
+        const offerLoadRef = str(argRecord.load_ref) ?? view.loadRef;
         return {
           ...view,
-          loadRef: str(argRecord.load_ref) ?? view.loadRef,
+          loadRef: offerLoadRef,
           offers: [
             ...view.offers,
             {
-              round: view.offers.length + 1,
+              loadRef: offerLoadRef,
+              // Per load, because `CallState.nextRound` is per load. A global
+              // count would let the ladder say "offer 3" for what the tool layer
+              // counted as round 1, and the trace pane renders the tool's own
+              // result — so the two panes would contradict each other.
+              round: view.offers.filter((o) => o.loadRef === offerLoadRef).length + 1,
               rateCents,
               askedCents: num(argRecord.carrier_asked_cents),
               accepted: action === "accept",
@@ -207,11 +235,18 @@ function applyToolCall(view: CallView, row: TraceRow): CallView {
         : { ...view, refusals: [...view.refusals, { tool: "book_load", reason }] };
     }
 
+    // Both of these end the call, so both gate on their success marker the way
+    // every other case here does. `withTrace` writes `result: { error }` when a
+    // tool throws, and that is still a record — so an ungated branch reads a
+    // failed `end_call` as a clean hang-up, disables the composer, and leaves
+    // the run `in_progress` on a server that never finished it.
     case "end_call": {
+      if (result.ended !== true) return refused(view, "end_call", result);
       return { ...view, outcome: str(result.outcome) ?? view.outcome, ended: true };
     }
 
     case "escalate_to_human": {
+      if (result.escalated !== true) return refused(view, "escalate_to_human", result);
       return { ...view, outcome: "escalated", ended: true };
     }
 

@@ -144,10 +144,31 @@ describe("projectCall — the negotiation", () => {
     ]);
 
     expect(view.offers).toEqual([
-      { round: 1, rateCents: 233000, askedCents: 400000, accepted: false },
-      { round: 2, rateCents: 266000, askedCents: 300000, accepted: true },
+      { loadRef: "LD-10401", round: 1, rateCents: 233000, askedCents: 400000, accepted: false },
+      { loadRef: "LD-10401", round: 2, rateCents: 266000, askedCents: 300000, accepted: true },
     ]);
     expect(view.loadRef).toBe("LD-10401");
+  });
+
+  it("counts rounds per load, the way the tool layer does", () => {
+    // `CallState.nextRound` is keyed by load. A global count would have the
+    // ladder calling this "offer 2" while the trace pane renders the tool's own
+    // result saying round 1 — two panes disagreeing about the same event.
+    const view = projectCall([
+      trace(0, "counter_offer", {
+        args: { load_ref: "LD-10401" },
+        result: { action: "offer", rate_cents: 233000 },
+      }),
+      trace(1, "counter_offer", {
+        args: { load_ref: "LD-10999" },
+        result: { action: "offer", rate_cents: 180000 },
+      }),
+    ]);
+
+    expect(view.offers.map((o) => [o.loadRef, o.round])).toEqual([
+      ["LD-10401", 1],
+      ["LD-10999", 1],
+    ]);
   });
 
   it("shows the gate refusing rather than dropping it", () => {
@@ -193,6 +214,21 @@ describe("projectCall — the negotiation", () => {
 
     expect(view.ended).toBe(true);
     expect(view.outcome).toBe("escalated");
+  });
+
+  // `withTrace` records a thrown tool as `{ error }`, which is still an object —
+  // so an ungated branch reads a failed hang-up as a clean one, disables the
+  // composer, and leaves the run `in_progress` on a server that never finished
+  // it. Both enders gate on their success marker, like every other case.
+  it.each([
+    ["end_call", { error: "runs.finish timed out" }],
+    ["escalate_to_human", { error: "runs.finish timed out" }],
+  ])("does not end the call when %s threw", (tool, result) => {
+    const view = projectCall([trace(0, tool, { result })]);
+
+    expect(view.ended).toBe(false);
+    expect(view.outcome).toBeNull();
+    expect(view.refusals).toEqual([{ tool, reason: "runs.finish timed out" }]);
   });
 });
 
