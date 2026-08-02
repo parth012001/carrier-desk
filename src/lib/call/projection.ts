@@ -187,9 +187,19 @@ function applyToolCall(view: CallView, row: TraceRow): CallView {
       return { ...view, compliance: readCompliance(result) ?? view.compliance };
     }
 
+    // Two reads of the tool's **own** answer — the nested row on a hit, the
+    // top-level ref on a miss — and never of the argument it was asked with.
+    // `byRef` matches exactly, so on the happy path the argument agrees and the
+    // distinction looks academic; it is not. The argument is what the model
+    // said, so reading it puts a load on the screen on the model's say-so, which
+    // is the failure `found` is checked for arriving through the other door.
+    //
+    // It also leaves `found` doing real work: a miss names its ref, so the flag
+    // is the only thing standing between a load the board has no row for and the
+    // panel that renders it.
     case "get_load": {
       const load = isRecord(result.load) ? result.load : null;
-      const ref = str(load?.load_ref) ?? str(argRecord.load_ref);
+      const ref = str(load?.load_ref) ?? str(result.load_ref);
       return result.found === true && ref !== null ? { ...view, loadRef: ref } : view;
     }
 

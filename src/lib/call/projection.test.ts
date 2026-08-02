@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { InMemoryLoadStore } from "@/lib/agent/ports/memory";
+import { toAgentLoad } from "@/lib/tools/sanitize";
+
 import type { CallEvent } from "./events";
 import { projectCall } from "./projection";
 
@@ -127,6 +130,56 @@ describe("projectCall — compliance", () => {
 
     expect(view.carrier).toBeNull();
     expect(view.compliance?.decision).toBe("block");
+  });
+});
+
+describe("projectCall — the load", () => {
+  const REF = "LD-10401";
+
+  /**
+   * Exactly what `get_load` returns on a hit: the real seeded row through the
+   * real allowlist (`src/lib/tools/index.ts`). Every `get_load` fixture in this
+   * file used to be a miss, so this branch — the one that makes `LoadPanel` and
+   * `RateLadder` render at all — had never run under test.
+   */
+  async function found(ref: string): Promise<{ found: true; load: Record<string, unknown> }> {
+    const load = await InMemoryLoadStore.fromSeed().byRef(ref);
+    if (load === null) throw new Error(`no seeded load ${ref}`);
+    return { found: true, load: toAgentLoad(load) as unknown as Record<string, unknown> };
+  }
+
+  it("does not show a load the tool did not find", async () => {
+    // The miss carries the same ref as the hit would, so the `found` flag is the
+    // only thing that can decide. Without it the ladder and the load card open
+    // on a reference the board has no row for.
+    const view = projectCall([
+      trace(0, "get_load", { args: { load_ref: REF }, result: { found: false, load_ref: REF } }),
+    ]);
+
+    expect(view.loadRef).toBeNull();
+  });
+
+  it("shows the load the tool returned", async () => {
+    const view = projectCall([
+      trace(0, "get_load", { args: { load_ref: REF }, result: await found(REF) }),
+    ]);
+
+    expect(view.loadRef).toBe(REF);
+  });
+
+  it("reads the ref the tool answered with, not the one the model asked for", async () => {
+    // A result whose shape we do not recognise leaves the view unchanged, which
+    // is this module's whole contract. Falling back to the argument would put a
+    // load on the screen on the model's say-so — the same failure the `found`
+    // flag is checked for, arriving through the other door.
+    const load = { ...(await found(REF)).load };
+    delete load.load_ref;
+
+    const view = projectCall([
+      trace(0, "get_load", { args: { load_ref: REF }, result: { found: true, load } }),
+    ]);
+
+    expect(view.loadRef).toBeNull();
   });
 });
 
