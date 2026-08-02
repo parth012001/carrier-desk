@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { runCall } from "@/lib/agent/run";
 import { InMemoryTraceSink, TeeTraceSink } from "@/lib/agent/trace";
 import { buildTools } from "@/lib/tools";
 import { MC_ALLOWED, callTool, makeHarness } from "@/lib/tools/harness";
+import { everythingSentTo, sayingModel } from "@/test/fake-model";
 
 import { type CallSession, InMemorySessionStore } from "./session";
 
@@ -99,6 +101,34 @@ describe("tools are bound to the trace of the turn that uses them", () => {
     expect(durable.toolCalls().map((e) => e.name)).toEqual(["lookup_carrier"]);
     expect(live.toolCalls().map((e) => e.name)).toEqual(["lookup_carrier"]);
     expect(live.toolCalls()[0].durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("serialises identically when rebuilt, so the cached prefix survives", async () => {
+    // The cost of rebuilding tools every turn, checked rather than assumed.
+    // Anthropic renders tools → system → messages and the cache breakpoint sits
+    // on the system block, so the tool schemas are inside the cached prefix. If
+    // a rebuild changed one byte of them, every turn of every call would miss
+    // the cache and silently pay full price — the exact failure DECISIONS #15
+    // and `pnpm agent:smoke` exist to catch.
+    const harness = makeHarness();
+    const payloads: string[] = [];
+
+    for (const _turn of [1, 2]) {
+      const model = sayingModel("ok");
+      await runCall({
+        model,
+        tools: buildTools({
+          deps: { ...harness.deps, trace: new InMemoryTraceSink() },
+          state: harness.state,
+        }),
+        messages: [{ role: "user", content: "MC 186800, calling on LD-10400" }],
+        trace: new InMemoryTraceSink(),
+      });
+      payloads.push(everythingSentTo(model));
+    }
+
+    expect(payloads[0]).toBe(payloads[1]);
+    expect(payloads[0]).toContain("lookup_carrier");
   });
 
   it("keeps counter state across tool sets built for different turns", async () => {

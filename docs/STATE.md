@@ -6,33 +6,43 @@
 
 ## Where we are
 
-Branch: `day-3-agent-core` · **Day 3 of 7 COMPLETE, pre-landing review applied** ·
-`pnpm test` **425 green**, offline · typecheck + lint clean
+Branch: `day-4-interface` · **Day 4 of 7 COMPLETE** · `pnpm test` **479 green**, offline ·
+typecheck + lint clean · `pnpm agent:smoke` and `pnpm eval` both green against live services
 
-The thing is an agent now. It verifies a carrier against live FMCSA data, presents a load,
-negotiates inside a policy it cannot see, books, and writes a full trace — and there is an
-adversarial eval that has already caught a real defect and confirmed the fix.
+**You can watch it work now.** `/call` is a three-column console: the desk on the left (carrier,
+compliance, load, rate ladder), the conversation in the middle, the live tool trace on the right.
+Every panel is a fold over one event stream, so no two can disagree and none of them polls
+anything.
 
-Day 3 also closed the highest-priority Day 2 deferral (fetch timeouts) and fixed a schema bug
-found while planning the carrier write path.
+Day 4 is a transport around the Day 3 core, exactly as planned — **`runCall` is not modified**.
+The trace sink turned out to be the seam: `withTrace` already routed every tool call through
+one, so the browser gets a second sink tee'd beside the durable one. `DECISIONS.md` #20.
 
-**Not yet merged.** PR #2 is open. The pre-landing review found **19 critical issues**, and the
-eight that broke the project's stated claims are fixed on this branch with a regression test
-each — all thirteen fixes mutation-tested, every mutant killed. `DECISIONS.md` #19 has the
-reasoning; the short version is that the ceiling was recoverable three separate ways while the
-allowlist withholding it was working perfectly, and the eval invariant guarding that claim
-compared cents against prose so it could not fail.
+It also closed **two of the eleven deferred criticals**, both of which this day's work promoted
+from latent to load-bearing: #1 (a trace-write failure could report a committed booking as a
+failure — a database outage was needed before; a closed browser tab is enough once the sink
+streams) and #10 (`seq` restarting at 0 each turn, which made the pane interleave turn 2 into
+turn 1). Both mutation-tested.
 
-Fixed: booking at the ceiling with no counter (`no_offer_made`) · the reason-code oracle
-(offer guards ordered before the ceiling guard) · offers as an affine function of the ceiling
-(schedule now interpolates floor→market) · a blocked lookup becoming the carrier a load was
-tendered to · the rate gate being call-wide rather than per-carrier (`counter_offer` now takes
-`mc_number`) · agreements evaporating and being countered upward · `escalate_to_human`
-overwriting a committed booking, and `end_call` fabricating one · the cents-vs-prose eval
-invariant and the printed/persisted verdict divergence.
+**Day 3 is merged.** PR #2 landed as `772174c`. The pre-landing review's remaining nine
+criticals are still listed under **Blocked / open**.
 
-The remaining eleven criticals are listed under **Blocked / open** below and were deliberately
-not taken on this branch.
+## Done — Day 4
+
+- [x] `/call` console: split view, live trace with args + result + latency, carrier profile and
+      load updating beside the conversation, compliance block with every reason rendered
+- [x] Transport: `POST /api/call` and `POST /api/call/[runId]/turn` streaming NDJSON, fed by
+      `TeeTraceSink(DrizzleTraceSink, CallbackTraceSink)`. Not a Server Action — Next 16
+      dispatches those one at a time per client and answers with a re-render, and its own guide
+      points at a route handler for this shape.
+- [x] `projectCall` — the pure fold every panel reads. Defensive throughout: an unrecognised
+      shape leaves the view unchanged, because a rendering bug must not take down a live call.
+- [x] `toBrokerLoad` + a second allowlist, checked against the `loads` table by the same test as
+      the agent's, so a new column has to be decided about twice (`DECISIONS.md` #21)
+- [x] `wire.test.ts` — the ceiling's absence from the wire, per load, in cents and dollars,
+      through real tools on all 40 lanes
+- [x] Deferred criticals **#1** and **#10** closed
+- [x] Suite **427 → 479**
 
 ## Done — Day 3
 
@@ -54,8 +64,25 @@ not taken on this branch.
 
 ## Verified live, not just in tests
 
-- `pnpm agent:smoke 186800 LD-10401` — real model, real FMCSA, real Postgres. Carrier
-  verified in ~380ms, full turn ~3s, 7 `run_events` rows with args/result/duration.
+**Day 4, in a headless browser at 1440×900 and 390×844:**
+
+- **Demo contract item 1.** MC 186800 → LD-10401 booked at $2,665.66 across three turns. Trace
+  numbered 01–04 continuously; header and load card both flip to covered.
+- **Demo contract item 2.** MC 1175378 → blocked, with `AUTHORITY_NOT_ACTIVE`,
+  `PRIOR_AUTHORITY_REVOCATION` and `OOS_NOT_VERIFIED` each rendered with its own sentence. The
+  agent refuses, calls `end_call`, and the composer disables itself.
+- Tool calls stream with real latencies (`get_load` 88ms, `lookup_carrier` 401ms) and you can
+  see the model issue them as **one parallel step** — the Day 3 ordering story, visible.
+- `seq` stayed dense `0..6` across two separate HTTP requests instead of restarting.
+- An unknown `runId` returns **409**, never a rebuilt `CallState`.
+- No console errors, no horizontal overflow at either viewport.
+
+**Day 3, still green after Day 4:**
+
+- `pnpm agent:smoke 186800 LD-10402` — real model, real FMCSA, real Postgres. Two turns, 10
+  `run_events` rows, and **the prompt prefix still caches: 7,284 tokens read on turn 2.**
+- `pnpm eval` — 1/1 pass, all five code-enforced invariants and all five judged dimensions.
+- `pnpm agent:smoke 186800 LD-10401` — carrier verified in ~380ms, full turn ~3s.
 - **The prompt prefix caches: 4,764 tokens read per turn.** This was genuinely uncertain —
   `DECISIONS.md` #15 recorded the Day 2 prefix at ~1078 tokens against Sonnet 5's 1024
   minimum, not caching. With the real prompt plus seven tool schemas it is ~4.8k and caches
@@ -107,6 +134,29 @@ is to break the code deliberately.
 
 ## Notes for the next session
 
+**From Day 4:**
+
+- **`buildTools` captures `deps.trace` at construction.** Tools built once at call start write
+  only to the sink that existed then, so the browser got the conversation and zero tool calls —
+  the entire trace pane, empty, with every test green. The turn route rebuilds tools per turn
+  against a tee'd trace; `state` is what has to persist. A test asserts the rebuild leaves the
+  serialized payload byte-identical, because the tool schemas sit inside the cached prefix.
+- **Two authorities for ordering, and they are different.** `run_events.seq` is durable order;
+  the live stream is delivery order. `CallEvent.index` is local to one connection and restarts
+  at zero each turn — do not render it as a sequence number and never use it as a React key.
+- **`@/db` throws at module load without `DATABASE_URL`.** A route handler importing it crashes
+  at import time, not request time. `src/lib/call/start.ts` builds its own Neon client, the way
+  `scripts/agent-smoke.ts` does.
+- **A `ReadableStream`'s work must not be awaited before returning the `Response`**, or nothing
+  streams. `runCall` is kicked off inside `start(controller)` and the response returns while it
+  is still running.
+- **`controller.enqueue` throws once the reader is gone.** That is a routine event — people
+  close tabs — which is why `writeTrace` and the tee exist in the shape they do.
+- Payload-level leak tests must be scoped **per load** (across 40 lanes one load's market rate
+  eventually equals another's ceiling) and must distinguish **args from results** (`withTrace`
+  echoes args verbatim, so passing a number in proves nothing about whether we leaked it).
+  `src/lib/tools/invariant.test.ts:248` had already recorded the second half of this.
+
 - **v7 renamed enough that v6 examples do not compile.** `stepCountIs` → `isStepCount`,
   `system` → `instructions`, `result.usage` is now the total across steps
   (`finalStep.usage` is the last one), cache tokens moved to
@@ -128,15 +178,44 @@ is to break the code deliberately.
 
 ## Next command
 
-**Start Day 4 — the interface.** Split view: conversation left, live tool trace right, load
-board and carrier profile updating beside the call, compliance block rendering with its
-reasons. Everything it needs already exists and is headless; Day 4 is a transport, not a
-rewrite.
+**Start Day 5 — the eval suite.** Carrier-simulator agent playing personas against the real
+agent, an LLM judge with a per-dimension rubric, `pnpm eval` printing a scorecard, results
+persisted and rendered at `/evals`. The walking skeleton already exists and works; Day 5 is
+scaling it, which is the compressible part.
 
-Before that, consider a pre-landing review of `day-3-agent-core` — Day 2's found eight defects
-including two wrong-allows, and this branch is bigger.
+The six personas the kill order protects: revoked authority · prompt injection · "what's your
+max" · mangled MC digits · double-broker · mid-call hangup.
+
+Before that, consider a pre-landing review of `day-4-interface`. Day 3's review found 19
+criticals, and this branch touches the trace path, adds an HTTP surface and adds a new
+serialization boundary.
+
+**Two things Day 5 should pick up cheaply while it is in the area:**
+
+- `runCall` still uses `onStepFinish`, which is `@deprecated` in the installed `ai@7.0.48`
+  (`node_modules/ai/dist/index.d.ts:4897`) in favour of `onStepEnd`. One word. Deliberately not
+  taken on Day 4, whose whole premise was not touching the core.
+- Deferred critical **#5** (no `finally`, so a run that throws or hits the step cap leaves
+  `runs` at `in_progress` with a null `endedAt`) is the next most likely to bite, and the
+  interface makes a stuck run visible in a way the CLI never did.
 
 ## Blocked / open
+
+### Owed by Day 7 — known, logged, not a surprise
+
+**Sessions are process-local.** `InMemorySessionStore` holds `CallState` and `messages` in a
+`Map` on `globalThis`. Correct under `next dev` and any single long-lived server; wrong on
+Vercel, which gives no instance affinity, so a second turn can land on a cold instance with an
+empty map. **Deploying without fixing this breaks demo contract item 1 intermittently.**
+
+What makes it safe to have shipped: the failure is loud. A missing session is a `409
+session_not_found`, never a rebuilt `CallState` — rebuilding one resets `countersUsed` to 0 and
+`hasClearedCarrier()` to false, so the three-counter cap would quietly stop existing. The store
+has no method that constructs a session, so that path is not reachable from it.
+
+The fix is a second `SessionStore` implementation over a serialized `CallState` snapshot
+(`toJSON`/`fromJSON` plus a row keyed by `runId`), which is why the interface exists. Roughly
+1–2h. `CallState` currently holds four `Map`s and a `Set`, all private, with no `toJSON`.
 
 ### From the PR #2 review — critical, deliberately deferred
 

@@ -517,3 +517,100 @@ it obfuscates rather than removes) · collapsing all rejections to one opaque co
 internal diagnostics the trace exists for, when ordering the checks already closes the oracle) ·
 rate-limiting failed booking attempts (treats the symptom; with the offer guard checked first
 there is nothing left to probe).
+
+### 20 — The trace sink is the transport seam
+**2026-08-02** — Day 4
+
+The interface had to stream a call to a browser without the agent loop learning that browsers
+exist. `run.ts` commits to no streaming and no UI inside `runCall`, because Day 5 pushes
+hundreds of adversarial turns through that same function and anything coupling conversation
+policy to a transport makes that harder for no benefit.
+
+The seam already existed and had been there since Day 3. `withTrace` funnels every tool call
+through a `TraceSink`, and `runCall` writes the user turn and each assistant turn through the
+same one. So the live view is a **second sink**, tee'd next to the durable one — one branch to
+`run_events`, one to an HTTP response stream. `runCall` is not modified by Day 4 at all.
+
+**A route handler, not a Server Action.** Next 16's own guide states actions are dispatched one
+at a time per client and answer with a single Flight response carrying a return value plus a
+re-rendered tree. That is a mutation primitive, not an event channel, and the guide points at a
+route handler for this shape. `streamText` was the other option and was rejected for the reason
+above: it would mean rewriting the loop around a transport.
+
+**The cost, taken knowingly:** `generateText` resolves a step at a time, so the reply lands per
+step rather than per token. The tool trace is what this project is arguing about, and it streams
+live with real latencies — a 400ms FMCSA lookup and an 8ms cache hit look different on screen,
+which is most of the difference between a demo and a mock.
+
+**Ordering has two authorities and they are not the same one.** The live stream is ordered by
+delivery; `run_events.seq` is the durable order. Both derive from the same call order. The
+client numbers its own rows across the call rather than trusting the per-connection index — that
+index restarts at zero every turn, so as a label it counted 1, 2, 1, 2 and as a React key it
+collided outright.
+
+**Sessions live in process memory, behind an interface, failing loudly.** `CallState` holds
+`countersUsed`, `verifiedMcNumber` and `agreedByLoad` — it *is* the negotiation policy's memory —
+and `messages` carries tool results forward. Neither may round-trip through the browser: a client
+holding counters-used does not need prompt injection, it needs a text editor. That would hand #4,
+#17 and #19 to the client.
+
+A process-local `Map` is wrong on a platform with no instance affinity, and Day 7 deploys to one.
+The trade is taken anyway because the failure is made **loud**: a missing session is a 409, never
+a rebuilt `CallState`. Rebuilding one resets `countersUsed` to 0 and `hasClearedCarrier()` to
+false — the three-counter cap quietly stops existing with nothing on any screen to say so. The
+store has no method that constructs a session, so that path is not reachable from it. Day 7's fix
+is a second `SessionStore` implementation over a `CallState` snapshot, not a rewrite.
+
+**Tools are built per turn, and that was found live rather than in review.** `buildTools`
+captures `deps.trace` at construction, so a tool set built at call start writes only to the sink
+that existed then — the durable one. The first working version streamed the conversation and zero
+tool calls: the entire right-hand pane, empty, with every test green. `state` is the object that
+must survive between turns; the tool set is a closure over it and costs nothing to rebuild. The
+rebuild is asserted not to disturb the cached prompt prefix — Anthropic renders tools → system →
+messages and the breakpoint sits on the system block, so a rebuilt schema differing by one byte
+would silently cost full price on every turn (#15).
+
+**Rejected:** a Server Action returning a stream (sequential dispatch, and the response shape is
+a re-render) · `streamText` inside `runCall` (couples policy to transport) · rehydrating
+`CallState` by folding `run_events` (puts a second implementation of the gate on the
+safety-critical path, where a drift is a wrong-allow) · round-tripping state through the client
+(see above).
+
+### 21 — A second audience is a second allowlist
+**2026-08-02** — Day 4, extends #19
+
+#19's generalisation is that an allowlist is a claim about representation, not information, so
+the question at any boundary is what can be *computed* from what was sent. The interface added a
+boundary: a server component serialising a load into a client component is every bit as much a
+wire as a tool result.
+
+So the broker's screen gets its own named projection, `toBrokerLoad`, rather than a spread row.
+Its answer is deliberately **different** from the model's: the policy band is included. Floor,
+market and ceiling are the brokerage's own data, and putting the ceiling on screen beside the
+offers is the clearest statement the interface can make — the number sits there, unmoving, while
+the agent negotiates without it.
+
+Both allowlists are now checked against the `loads` table by the same test, so a new column has
+to be decided about twice. That is the part worth having: the second boundary is the easy one to
+forget, and forgetting it is how a "just render the board" change ships a column nobody reviewed.
+The two shapes share no rate field names and use opposite casing, so a value shaped for one
+reader cannot be handed to the other and `ceilingCents` greps to every place a human is shown the
+walk-away.
+
+The ceiling therefore reaches the ladder from the server render, **never from the event stream**.
+Keeping those two channels separate is what lets `src/lib/call/wire.test.ts` assert the ceiling's
+total absence from the wire, per load, in cents and in dollars.
+
+Two things that test had to get right, both discovered by it failing first, and both worth
+remembering because they are the same class of error #19 was about:
+
+- **Scope per load.** Checked against one combined transcript it fails on coincidence — across 40
+  lanes one load's market rate eventually equals another's ceiling, which discloses nothing.
+- **Arguments are not results.** `withTrace` echoes `args` verbatim, so passing the ceiling in as
+  a booking rate put it on the wire by our own hand. A model cannot send a number it does not
+  have. `src/lib/tools/invariant.test.ts` had already learned this exact lesson.
+
+**Not done:** a `toBrokerCarrier`. Carrier data reaches the browser through the verbatim trace
+row, so a projection would be dead code. The carrier's phone number crossing to the broker's
+screen is deliberate — they are on a call with that carrier — and is recorded here rather than
+left implicit.

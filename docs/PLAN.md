@@ -54,10 +54,18 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [x] Fixed a schema bug found while planning the write path: `carriers.is_out_of_service`
       was `NOT NULL DEFAULT false` against a three-valued field
 
-## Day 4 — Interface
-- [ ] Split view: conversation left, live tool trace right (args, result, latency)
-- [ ] Load board + carrier profile update in real time beside the call
-- [ ] Compliance block renders with its reasons visible
+## Day 4 — Interface ✅
+- [x] Split view: conversation left, live tool trace right (args, result, latency)
+- [x] Load board + carrier profile update in real time beside the call
+- [x] Compliance block renders with its reasons visible
+- [x] Transport is a route handler streaming NDJSON off a **tee'd `TraceSink`** —
+      `runCall` unmodified, so Day 5 still runs headless (`DECISIONS.md` #20)
+- [x] Second-audience allowlist `toBrokerLoad`, and the wire asserted free of the
+      ceiling per load, in cents and dollars (`DECISIONS.md` #21)
+- [x] Closed deferred criticals **#1** (a trace write could unbook freight) and
+      **#10** (per-instance `seq` restarting each turn) — both promoted from latent
+      to load-bearing by this day's work
+- [x] **Regression suite green and grown: 427 → 479.** Every fix mutation-tested
 
 ## Day 5 — Eval suite
 - [ ] Carrier-simulator agent that plays a persona against the real agent
@@ -106,4 +114,7 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 | 2026-08-01 | Day 3: `counter_offer` computes the rate instead of clamping a model-supplied one | The clamp version makes the invariant a validation problem, and every test on that path is a test that our validation is exhaustive. Removing the argument removes the class. | None — simpler tool, stronger claim |
 | 2026-08-01 | Day 3 also took deferred item 1 (fetch timeouts) | Day 3 wraps the lookup in a tool on a live carrier call, so a 300s undici default stopped being theoretical. Cheaper to fix where it is used than to schedule separately. | ~1h, closes the highest-priority Day 2 deferral |
 | 2026-08-01 | Day 3 added a verification gate to `counter_offer` | The eval caught the agent quoting before the FMCSA lookup returned — the model parallelises tool calls, so prompt-stated ordering is not ordering. See `DECISIONS.md` #18. | ~20m, and it is the demo's best single anecdote |
+| 2026-08-02 | Day 4 took deferred criticals #1 and #10 before writing any UI | Both live on the trace path, and Day 4 turns the trace from a debug aid into a rendered feature. #1 needed a database outage to reach; a live sink enqueueing onto an HTTP stream makes closing a tab enough, on the path that commits freight. #10 was a latent duplicate; one sink per request made turn 2 restart at seq 0 and the pane interleave it into turn 1. | ~1.5h, closes two of the eleven deferred criticals |
+| 2026-08-02 | Sessions are process-local, not snapshotted | Cheapest thing that is correct in `next dev`, and the failure is made loud — a missing session is a 409, never a rebuilt `CallState`. **Day 7 owes a `SessionStore` backed by a `CallState` snapshot**, or a second turn landing on a cold Vercel instance silently resets the counter cap. Tracked as a Day 7 item, not a surprise. | ~0 now, ~1–2h on Day 7 |
+| 2026-08-02 | Day 4 added a second allowlist rather than reusing the agent's | The interface serialises a load into a client component, which is a wire. #19's rule is that the question has to be asked per audience, and the human's answer differs — the broker sees the band. | ~30m, and the ladder is the demo's best visual |
 | 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |
