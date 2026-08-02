@@ -6,8 +6,8 @@
 
 ## Where we are
 
-Branch: `day-3-agent-core` · **Day 3 of 7 COMPLETE** · `pnpm test` **398 green**, offline ·
-typecheck + lint clean
+Branch: `day-3-agent-core` · **Day 3 of 7 COMPLETE, pre-landing review applied** ·
+`pnpm test` **425 green**, offline · typecheck + lint clean
 
 The thing is an agent now. It verifies a carrier against live FMCSA data, presents a load,
 negotiates inside a policy it cannot see, books, and writes a full trace — and there is an
@@ -16,9 +16,23 @@ adversarial eval that has already caught a real defect and confirmed the fix.
 Day 3 also closed the highest-priority Day 2 deferral (fetch timeouts) and fixed a schema bug
 found while planning the carrier write path.
 
-**Not yet merged.** Seven commits on `day-3-agent-core`, unpushed. Day 2 went through a
-pre-landing review as PR #1 and found eight defects; Day 3 is larger and should get the same
-treatment.
+**Not yet merged.** PR #2 is open. The pre-landing review found **19 critical issues**, and the
+eight that broke the project's stated claims are fixed on this branch with a regression test
+each — all thirteen fixes mutation-tested, every mutant killed. `DECISIONS.md` #19 has the
+reasoning; the short version is that the ceiling was recoverable three separate ways while the
+allowlist withholding it was working perfectly, and the eval invariant guarding that claim
+compared cents against prose so it could not fail.
+
+Fixed: booking at the ceiling with no counter (`no_offer_made`) · the reason-code oracle
+(offer guards ordered before the ceiling guard) · offers as an affine function of the ceiling
+(schedule now interpolates floor→market) · a blocked lookup becoming the carrier a load was
+tendered to · the rate gate being call-wide rather than per-carrier (`counter_offer` now takes
+`mc_number`) · agreements evaporating and being countered upward · `escalate_to_human`
+overwriting a committed booking, and `end_call` fabricating one · the cents-vs-prose eval
+invariant and the printed/persisted verdict divergence.
+
+The remaining eleven criticals are listed under **Blocked / open** below and were deliberately
+not taken on this branch.
 
 ## Done — Day 3
 
@@ -123,6 +137,61 @@ Before that, consider a pre-landing review of `day-3-agent-core` — Day 2's fou
 including two wrong-allows, and this branch is bigger.
 
 ## Blocked / open
+
+### From the PR #2 review — critical, deliberately deferred
+
+Ranked. Each was confirmed by reading the code; several were reproduced against `makeHarness()`.
+
+1. **A trace-write failure turns a committed booking into a reported failure.** `withTrace`
+   awaits `sink.write` inside the `try`, *after* `execute` succeeded, so a Neon blip routes a
+   successful `book_load` into the catch, discards the return value and rethrows — the load is
+   `covered` in Postgres while the model is told it failed. The catch's own `sink.write` then
+   throws against the same dead sink, so `throw error` never runs and the real exception is
+   masked. Fix: wrap both writes in their own try/catch so tracing can never change a tool's
+   outcome. `trace.ts:73`.
+2. **`book_load` commits before its bookkeeping.** `cover()` writes `covered`, then
+   `negotiations.record` can throw → the SDK returns a tool-error → the agent tells the carrier
+   it failed; the retry hits `load_unavailable`. Same shape in `counter_offer`, where
+   `recordOffer` consumes a counter before the DB write, so two blips burn all three
+   concessions without a number ever spoken. `index.ts:263`, `:200`.
+3. **Nothing caps one call at one booking.** `already_booked` is per-load, so the agent can book
+   LD-10400, then LD-10401, then LD-10402, each `cover()` succeeding independently.
+   `index.ts:270`.
+4. ~~**`pnpm db:seed` will fail after any real run.**~~ **FIXED.** Seeding now upserts on
+   `loads_ref_idx` instead of delete-then-insert, so the rows `negotiations.load_id` points at
+   survive and load ids stay stable. Verified against the live database: both FKs into `loads`
+   are `NO ACTION` with live child rows present, three consecutive `pnpm db:seed` runs
+   succeeded, ids unchanged, zero orphans. It is also one statement now, so there is no window
+   where the board is empty.
+5. **No `finally` anywhere.** The step cap, `maxTurns` expiring, and any throw all leave the
+   `runs` row `in_progress` with a null `endedAt` — including when `cover()` already committed.
+   `runs.finish` is reachable only from the two terminal tools.
+6. **A parallel step can race `book_load` against `end_call`.** The SDK executes a step's tool
+   calls concurrently; if `end_call` resolves first it writes a null rate while the load is
+   covered, and the loop then stops on the terminal call so nothing corrects it.
+7. **`counter_offer` never checks `load.status`.** It negotiates freight another call already
+   covered, quotes a number out loud, and only discovers it at `book_load`.
+8. **`previous_calls` counts lookups, not calls.** `totalCalls` increments per `lookup_carrier`,
+   so three lookups in one conversation return 0, 1, 2 — and it is permanent in Postgres. This
+   is the metric demo contract item 4 rests on.
+9. **The 7-day stale-cache fallback turns a failed FMCSA check from block into flag.** Bounded
+   and documented (#16), but it is an authorization check that now defaults to allow on failure,
+   and the API being down is when an attacker would prefer to call.
+10. **`DrizzleTraceSink.seq` is per-instance** with no unique index on `(run_id, seq)`, so turn 2
+    in a new process restarts at 0 and silently duplicates.
+11. **Unwritten columns:** `runs.compliance_decision`, `eval_results.run_id`, and every carrier
+    Twin field (`total_booked`, `last_rate_accepted_cents`, `last_load_ref`). `runs.load_id` was
+    fixed on this branch. Also: the eval writes runs to `InMemoryRunSink`, so `is_eval` is never
+    true in the database and `eval_results.run_id` cannot be populated as written.
+
+Informational findings not listed here: three tautological tests (`policy.test.ts:90`,
+`models.test.ts:129`, `carrier-persistence.test.ts:39` — the last reads back through a store that
+returns the argument by reference, so a `?? false` in `DrizzleCarrierStore` keeps it green); no
+`Drizzle*` port has any test; dead code (`NullTraceSink`, `CallState.totalCounters()`); `pnpm
+eval` hard-depends on live Socrata against CLAUDE.md's own rule, while `fixtureSource()` sits
+unused; the eval mixes a fixed board clock with `new Date()`; `withTrace` drops the SDK's second
+argument so `abortSignal` never reaches a tool; `run_events.result` persists carrier phone with
+no redaction path; the prompt cache breakpoint covers only the system block.
 
 ### Found on Day 3, worth fixing before the demo
 
