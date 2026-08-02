@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { InMemoryTraceSink, type TraceSink, withTrace } from "./trace";
+import {
+  CallbackTraceSink,
+  InMemoryTraceSink,
+  TeeTraceSink,
+  type TraceEvent,
+  type TraceSink,
+  withTrace,
+} from "./trace";
 
 /** A sink whose backing store is gone: a Neon blip, or a closed HTTP stream. */
 class DeadTraceSink implements TraceSink {
@@ -141,5 +148,92 @@ describe("withTrace, when the sink itself fails", () => {
 
     expect(spy).toHaveBeenCalledOnce();
     expect(spy.mock.calls[0].join(" ")).toContain("lookup_carrier");
+  });
+});
+
+describe("CallbackTraceSink", () => {
+  it("emits every event as it happens, densely numbered", async () => {
+    const seen: TraceEvent[] = [];
+    const sink = new CallbackTraceSink((event) => seen.push(event));
+
+    await sink.write({ type: "user_message", result: "MC 186800, got anything to Dallas?" });
+    await sink.write({
+      type: "tool_call",
+      name: "lookup_carrier",
+      args: { mc_number: "186800" },
+      result: { decision: "allow" },
+      durationMs: 380,
+    });
+
+    expect(seen.map((e) => e.seq)).toEqual([0, 1]);
+    expect(seen[1]).toMatchObject({
+      type: "tool_call",
+      name: "lookup_carrier",
+      args: { mc_number: "186800" },
+      result: { decision: "allow" },
+      durationMs: 380,
+    });
+  });
+});
+
+describe("TeeTraceSink", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("writes the same event to every branch", async () => {
+    const durable = new InMemoryTraceSink();
+    const live = new InMemoryTraceSink();
+
+    await new TeeTraceSink(durable, live).write({ type: "tool_call", name: "book_load" });
+
+    expect(durable.toolCalls()).toHaveLength(1);
+    expect(live.toolCalls()).toHaveLength(1);
+  });
+
+  it("keeps a dead branch from starving a live one, in both directions", async () => {
+    // The demo has to survive a Neon blip without the screen going blank, and
+    // has to keep recording after someone closes the tab. Neither branch is
+    // allowed to take the other down, or the tool being traced.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const alive = new InMemoryTraceSink();
+
+    await new TeeTraceSink(new DeadTraceSink(), alive).write({
+      type: "tool_call",
+      name: "lookup_carrier",
+    });
+    await new TeeTraceSink(alive, new DeadTraceSink()).write({
+      type: "tool_call",
+      name: "get_load",
+    });
+
+    expect(alive.toolCalls().map((e) => e.name)).toEqual(["lookup_carrier", "get_load"]);
+  });
+
+  it("preserves order in each branch when writes overlap", async () => {
+    // The model issues tool calls in parallel within a step, so two events
+    // really do overlap here. A fan-out that awaited branches in series would
+    // gate the second branch behind the first: a slow durable write on event 1
+    // would deliver event 2 to the browser first, and the trace pane would
+    // render the call out of order.
+    const order: string[] = [];
+    const slow: TraceSink = {
+      async write(event) {
+        await new Promise((r) => setTimeout(r, event.name === "first" ? 20 : 1));
+      },
+    };
+    const fast: TraceSink = {
+      async write(event) {
+        order.push(event.name ?? "");
+      },
+    };
+    const tee = new TeeTraceSink(slow, fast);
+
+    await Promise.all([
+      tee.write({ type: "tool_call", name: "first" }),
+      tee.write({ type: "tool_call", name: "second" }),
+    ]);
+
+    expect(order).toEqual(["first", "second"]);
   });
 });

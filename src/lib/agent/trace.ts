@@ -50,6 +50,54 @@ export class NullTraceSink implements TraceSink {
 }
 
 /**
+ * Hands each event to a callback as it happens.
+ *
+ * This is the whole reason the interface needs no changes to the agent loop.
+ * `runCall` already routes every user turn, assistant turn and tool call
+ * through a `TraceSink`, so streaming a call to a browser is a matter of
+ * adding a sink rather than rewriting the loop around a transport — which is
+ * what keeps conversation policy separate from how it is delivered.
+ *
+ * The number it assigns is local to this sink, not the run's durable `seq`.
+ * Order on the wire is delivery order; `run_events.seq` stays the authority
+ * for anyone reading the call back afterwards.
+ */
+export class CallbackTraceSink implements TraceSink {
+  private index = 0;
+
+  constructor(private readonly emit: (event: TraceEvent) => void) {}
+
+  async write(event: TraceEventInput): Promise<void> {
+    this.emit({ ...event, seq: this.index++ });
+  }
+}
+
+/**
+ * Fans one trace out to several sinks — on Day 4, one durable and one live.
+ *
+ * Branches are isolated from one another. Every write goes through
+ * `writeTrace`, so a database outage cannot stop the browser from seeing the
+ * call, and a browser that navigated away cannot stop the call being recorded.
+ * Neither can affect the tool being traced.
+ *
+ * The fan-out starts every branch synchronously rather than awaiting them in
+ * series. That is not an optimisation: the model issues tool calls in parallel
+ * within a step, so two events genuinely overlap, and a serial fan-out lets a
+ * slow first branch deliver event 2 to the second branch ahead of event 1.
+ */
+export class TeeTraceSink implements TraceSink {
+  private readonly sinks: readonly TraceSink[];
+
+  constructor(...sinks: TraceSink[]) {
+    this.sinks = sinks;
+  }
+
+  async write(event: TraceEventInput): Promise<void> {
+    await Promise.all(this.sinks.map((sink) => writeTrace(sink, event)));
+  }
+}
+
+/**
  * Writes a trace row without letting the write affect the caller.
  *
  * **A trace row is a record of work, never part of it.** Use this rather than
