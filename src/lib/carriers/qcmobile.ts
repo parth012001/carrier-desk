@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DEFAULT_FETCH_TIMEOUT_MS, isAbortError } from "./http";
 import { parseIntOrNull, parseMcNumber, parseYesNo, trimOrNull } from "./normalize";
 import type {
   AuthorityStatus,
@@ -145,8 +146,17 @@ export class QCMobileCarrierSource implements CarrierDataSource {
   private readonly webKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly baseUrl: string;
+  private readonly timeoutMs: number;
 
-  constructor(options: { webKey?: string; fetchImpl?: typeof fetch; baseUrl?: string } = {}) {
+  constructor(
+    options: {
+      webKey?: string;
+      fetchImpl?: typeof fetch;
+      baseUrl?: string;
+      /** Budget for the WHOLE lookup, shared across both legs. See http.ts. */
+      timeoutMs?: number;
+    } = {},
+  ) {
     const webKey = options.webKey ?? process.env.FMCSA_WEB_KEY;
     if (!webKey) {
       // Better to fail at construction than to look configured and 404 on the
@@ -159,6 +169,7 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     this.webKey = webKey;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.baseUrl = options.baseUrl ?? BASE_URL;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
   }
 
   /**
@@ -180,11 +191,19 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     return url.toString();
   }
 
-  private async getContent(path: string): Promise<{ ok: true; content: unknown } | { ok: false; message: string }> {
+  /**
+   * `signal` is the WHOLE lookup's deadline, not this call's. Both legs share
+   * it, so two sequential requests cannot add up to double the budget.
+   */
+  private async getContent(
+    path: string,
+    signal: AbortSignal,
+  ): Promise<{ ok: true; content: unknown } | { ok: false; message: string }> {
     let response: Response;
     try {
-      response = await this.fetchImpl(this.url(path));
+      response = await this.fetchImpl(this.url(path), { signal });
     } catch (cause) {
+      if (isAbortError(cause)) return { ok: false, message: this.timedOut(path) };
       // Node's fetch rejects with a bare "fetch failed" and puts the real reason
       // in `cause`, so the chain has to be walked or the operator learns nothing.
       // The URL — which carries the WebKey — shows up there too. This message
@@ -193,7 +212,17 @@ export class QCMobileCarrierSource implements CarrierDataSource {
       return { ok: false, message: this.redact(describeError(cause)) };
     }
 
-    const parsed = contentSchema.safeParse(await response.json().catch(() => null));
+    // The deadline covers the body too. Swallowing an abort into `null` would
+    // report a timeout as a payload problem.
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (cause) {
+      if (isAbortError(cause)) return { ok: false, message: this.timedOut(path) };
+      return { ok: false, message: `QCMobile returned an unrecognised payload for ${path}` };
+    }
+
+    const parsed = contentSchema.safeParse(body);
     if (!parsed.success) {
       return { ok: false, message: `QCMobile returned an unrecognised payload for ${path}` };
     }
@@ -209,6 +238,11 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     return { ok: true, content: parsed.data.content };
   }
 
+  /** `path` is safe to include — the WebKey rides the query string, not the path. */
+  private timedOut(path: string): string {
+    return `QCMobile did not respond within ${this.timeoutMs}ms for ${path}`;
+  }
+
   async lookupByMc(rawMcNumber: string): Promise<LookupResult> {
     const mcNumber = parseMcNumber(rawMcNumber);
     if (mcNumber === null) {
@@ -219,7 +253,12 @@ export class QCMobileCarrierSource implements CarrierDataSource {
       };
     }
 
-    const byDocket = await this.getContent(`/carriers/docket-number/${mcNumber}`);
+    // ONE deadline for the whole lookup. This source makes two sequential
+    // calls, so a per-call budget would give the richer source double the
+    // worst case of the keyless one — exactly backwards.
+    const signal = AbortSignal.timeout(this.timeoutMs);
+
+    const byDocket = await this.getContent(`/carriers/docket-number/${mcNumber}`, signal);
     if (!byDocket.ok) return { status: "error", mcNumber, message: byDocket.message };
 
     const selected = selectCarrier(byDocket.content);
@@ -229,7 +268,7 @@ export class QCMobileCarrierSource implements CarrierDataSource {
     const dotNumber = trimOrNull(String(carrier.dotNumber ?? ""));
     let authority: unknown[] = [];
     if (dotNumber !== null) {
-      const result = await this.getContent(`/carriers/${dotNumber}/authority`);
+      const result = await this.getContent(`/carriers/${dotNumber}/authority`, signal);
       if (!result.ok) return { status: "error", mcNumber, message: result.message };
       authority = Array.isArray(result.content) ? result.content : [];
     }

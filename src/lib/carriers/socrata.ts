@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { DEFAULT_FETCH_TIMEOUT_MS, isAbortError } from "./http";
 import {
   parseFmcsaDate,
   parseIntOrNull,
@@ -249,6 +250,8 @@ export class SocrataCarrierSource implements CarrierDataSource {
       appToken?: string;
       fetchImpl?: typeof fetch;
       datasetUrl?: string;
+      /** Outbound budget for the single request this source makes. See http.ts. */
+      timeoutMs?: number;
     } = {},
   ) {}
 
@@ -279,17 +282,17 @@ export class SocrataCarrierSource implements CarrierDataSource {
     }
 
     const doFetch = this.options.fetchImpl ?? fetch;
+    const timeoutMs = this.options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+
     let response: Response;
     try {
       response = await doFetch(this.buildUrl(mcNumber), {
         headers: this.options.appToken ? { "X-App-Token": this.options.appToken } : undefined,
+        // Without this, undici waits ~300s. A carrier is on the phone.
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (cause) {
-      return {
-        status: "error",
-        mcNumber,
-        message: `Socrata request failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-      };
+      return this.failure(mcNumber, cause, timeoutMs, "connecting");
     }
 
     if (!response.ok) {
@@ -306,7 +309,18 @@ export class SocrataCarrierSource implements CarrierDataSource {
       };
     }
 
-    const parsed = socrataResponseSchema.safeParse(await response.json().catch(() => null));
+    // The deadline covers the body too, so a stalled stream aborts here rather
+    // than at connect. Swallowing that into `null` would report a timeout as
+    // "unrecognised payload" and send whoever debugs it at our parser.
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch (cause) {
+      if (isAbortError(cause)) return this.failure(mcNumber, cause, timeoutMs, "reading the response");
+      return { status: "error", mcNumber, message: "Socrata returned an unrecognised payload" };
+    }
+
+    const parsed = socrataResponseSchema.safeParse(body);
     if (!parsed.success) {
       return { status: "error", mcNumber, message: "Socrata returned an unrecognised payload" };
     }
@@ -317,6 +331,27 @@ export class SocrataCarrierSource implements CarrierDataSource {
     if (record === null) return { status: "not_found", mcNumber };
 
     return { status: "found", record, raw: parsed.data };
+  }
+
+  /**
+   * A request that ran out of budget and a request that failed are different
+   * facts with different follow-ups — one says "the API is slow right now", the
+   * other says "the API refused us" — so they get different messages. Both are
+   * `error`, never `not_found`: an outage must not read as a fraud finding.
+   */
+  private failure(mcNumber: string, cause: unknown, timeoutMs: number, stage: string): LookupResult {
+    if (isAbortError(cause)) {
+      return {
+        status: "error",
+        mcNumber,
+        message: `Socrata did not respond within ${timeoutMs}ms while ${stage}`,
+      };
+    }
+    return {
+      status: "error",
+      mcNumber,
+      message: `Socrata request failed while ${stage}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    };
   }
 
   /**

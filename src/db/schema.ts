@@ -30,10 +30,26 @@ export const carriers = pgTable(
     phone: text("phone"),
 
     // Compliance snapshot, refreshed from the CarrierDataSource
-    authorityStatus: text("authority_status").notNull().default("unknown"), // active | revoked | inactive | unknown
-    isOutOfService: boolean("is_out_of_service").notNull().default(false),
+    authorityStatus: text("authority_status").notNull().default("unknown"), // active | inactive | pending | none | unknown
+    /**
+     * Three-valued, and NOT NULL would be a bug — see docs/DECISIONS.md #10.
+     *
+     * `CarrierRecord.isOutOfService` is `boolean | null` where null means "this
+     * source cannot determine it", and the Socrata census file has no
+     * out-of-service column among its 148, so every keyless lookup returns
+     * null. A `notNull().default(false)` column would persist that as `false`:
+     * recording "checked and clean" about a question nobody asked, which is
+     * precisely the failure #10 and #13 exist to prevent, one layer down.
+     */
+    isOutOfService: boolean("is_out_of_service"),
     safetyRating: text("safety_rating"),
     powerUnits: integer("power_units"),
+    /** Whether the entity is registered to haul for hire. Null = not established. */
+    authorizedForHire: boolean("authorized_for_hire"),
+    /** Whether this entity has had authority revoked before — a chameleon signal. */
+    priorRevocation: boolean("prior_revocation"),
+    /** Which source last wrote this snapshot, so a stale row is attributable. */
+    lastSource: text("last_source"),
 
     // The "Twin": what we learn about this carrier across calls.
     // This is what makes call #2 better than call #1.

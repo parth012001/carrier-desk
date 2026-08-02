@@ -398,3 +398,183 @@ describe("evaluateLookup — lookup outcomes", () => {
     ]);
   });
 });
+
+/**
+ * STALE_LOOKUP fires when the live FMCSA call failed and readThrough served a
+ * past-TTL cache entry instead. It is a property of the lookup, not of the
+ * carrier, which is why it lives in evaluateLookup and not in RULES — putting
+ * it in RULES would hand the one deliberately-pure function in this system a
+ * fact that does not exist on a CarrierRecord. See docs/DECISIONS.md #16.
+ */
+describe("evaluateLookup — STALE_LOOKUP", () => {
+  const HOUR_MS = 60 * 60 * 1000;
+
+  const cleanRecord = () =>
+    recordFor({
+      authorityStatus: "active",
+      isOutOfService: false,
+      safetyRating: "satisfactory",
+      authorizedForHire: true,
+      powerUnits: 85,
+      priorRevocation: false,
+    });
+
+  it("lifts an otherwise-clean allow to a flag", () => {
+    const clean = evaluateLookup({ status: "found", record: cleanRecord(), raw: null }, { now: NOW });
+    expect(clean.decision).toBe("allow");
+
+    const stale = evaluateLookup(
+      { status: "found", record: cleanRecord(), raw: null },
+      { now: NOW, staleAgeMs: 30 * HOUR_MS },
+    );
+
+    expect(stale.decision).toBe("flag");
+    expect(stale.reasons.map((r) => r.code)).toContain("STALE_LOOKUP");
+  });
+
+  it("reports first, because a caveat about the data outranks conclusions drawn from it", () => {
+    const result = evaluateLookup(
+      { status: "found", record: cleanRecord(), raw: null },
+      { now: NOW, staleAgeMs: 30 * HOUR_MS },
+    );
+
+    expect(result.reasons[0].code).toBe("STALE_LOOKUP");
+  });
+
+  it("carries the age so the operator can judge it", () => {
+    const result = evaluateLookup(
+      { status: "found", record: cleanRecord(), raw: null },
+      { now: NOW, staleAgeMs: 30 * HOUR_MS },
+    );
+
+    expect(result.reasons[0].message).toContain("30h");
+    expect(result.reasons[0].message).toContain("MC-186800");
+  });
+
+  it("never downgrades a block", () => {
+    // A flag added to a blocked carrier must not soften the decision. The
+    // highest severity present always wins.
+    const record = recordFor({
+      authorityStatus: "inactive",
+      isOutOfService: false,
+      safetyRating: "satisfactory",
+      authorizedForHire: true,
+      powerUnits: 55,
+      priorRevocation: false,
+    });
+
+    const result = evaluateLookup(
+      { status: "found", record, raw: null },
+      { now: NOW, staleAgeMs: 30 * HOUR_MS },
+    );
+
+    expect(result.decision).toBe("block");
+    expect(result.reasons.map((r) => r.code)).toEqual(["STALE_LOOKUP", "AUTHORITY_NOT_ACTIVE"]);
+  });
+
+  it("stays silent on the happy path", () => {
+    for (const staleAgeMs of [undefined, 0]) {
+      const result = evaluateLookup(
+        { status: "found", record: cleanRecord(), raw: null },
+        { now: NOW, staleAgeMs },
+      );
+
+      expect(result.decision, `staleAgeMs=${staleAgeMs}`).toBe("allow");
+      expect(result.reasons.map((r) => r.code)).not.toContain("STALE_LOOKUP");
+    }
+  });
+
+  it("applies to a stale not_found as well", () => {
+    const result = evaluateLookup(
+      { status: "not_found", mcNumber: "9999999" },
+      { now: NOW, staleAgeMs: 30 * HOUR_MS },
+    );
+
+    expect(result.decision).toBe("block");
+    expect(result.reasons.map((r) => r.code)).toEqual(["STALE_LOOKUP", "NOT_FOUND"]);
+  });
+
+  it("is not a record-level rule", () => {
+    // Guards the split: if someone moves this into RULES, evaluateCompliance
+    // starts needing a clock and a cache to answer a question about a carrier.
+    expect(RULES.map((r) => r.code)).not.toContain("STALE_LOOKUP");
+  });
+});
+
+/**
+ * A caller whose claimed DOT does not match the DOT on their claimed MC is
+ * reading two identities off two different pieces of paper — the identity-theft
+ * shape of double-brokering. Like STALE_LOOKUP this is a fact about the lookup,
+ * not the carrier: the claim lives in the conversation, not the FMCSA record.
+ */
+describe("evaluateLookup — MC_DOT_MISMATCH", () => {
+  const record = () =>
+    recordFor({
+      authorityStatus: "active",
+      isOutOfService: false,
+      safetyRating: "satisfactory",
+      authorizedForHire: true,
+      powerUnits: 85,
+      priorRevocation: false,
+    });
+
+  it("flags a claimed DOT that disagrees with the registry", () => {
+    const result = evaluateLookup(
+      { status: "found", record: record(), raw: null },
+      { now: NOW, claimedDotNumber: "9999999" },
+    );
+
+    expect(result.decision).toBe("flag");
+    expect(result.reasons[0].code).toBe("MC_DOT_MISMATCH");
+    expect(result.reasons[0].message).toContain("9999999");
+    expect(result.reasons[0].message).toContain("286764");
+  });
+
+  it("says nothing when the claim agrees", () => {
+    for (const claimed of ["286764", " 286764 ", "DOT 286764", "0286764"]) {
+      const result = evaluateLookup(
+        { status: "found", record: record(), raw: null },
+        { now: NOW, claimedDotNumber: claimed },
+      );
+
+      expect(result.decision, claimed).toBe("allow");
+    }
+  });
+
+  it("treats an unreadable claim as no claim, not as a mismatch", () => {
+    // A caller mumbling is not evidence of fraud, and a flag on every garbled
+    // phone line is a flag everyone learns to ignore.
+    for (const claimed of ["", "   ", "no idea", null, undefined]) {
+      const result = evaluateLookup(
+        { status: "found", record: record(), raw: null },
+        { now: NOW, claimedDotNumber: claimed },
+      );
+
+      expect(result.decision, String(claimed)).toBe("allow");
+    }
+  });
+
+  it("says nothing when the registry itself has no DOT to compare against", () => {
+    const noDot = { ...record(), dotNumber: null };
+    const result = evaluateLookup(
+      { status: "found", record: noDot, raw: null },
+      { now: NOW, claimedDotNumber: "9999999" },
+    );
+
+    expect(result.reasons.map((r) => r.code)).not.toContain("MC_DOT_MISMATCH");
+  });
+
+  it("never downgrades a block", () => {
+    const revoked = { ...record(), authorityStatus: "inactive" as const };
+    const result = evaluateLookup(
+      { status: "found", record: revoked, raw: null },
+      { now: NOW, claimedDotNumber: "9999999" },
+    );
+
+    expect(result.decision).toBe("block");
+  });
+
+  it("is not a record-level rule either", () => {
+    expect(RULES.map((r) => r.code)).not.toContain("MC_DOT_MISMATCH");
+  });
+});

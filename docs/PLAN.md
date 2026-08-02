@@ -30,27 +30,29 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [x] `QCMobileCarrierSource` — written and contract-tested; only its network path waits
       on the WebKey
 
-## Day 3 — Agent core + eval skeleton
-- [ ] Headless tool-calling loop (Vercel AI SDK + Anthropic)
-- [ ] Tools: `lookup_carrier`, `get_load`, `check_compliance`, `counter_offer`,
+## Day 3 — Agent core + eval skeleton ✅
+- [x] Headless tool-calling loop (Vercel AI SDK 7 + Anthropic)
+- [x] Tools: `lookup_carrier`, `get_load`, `check_compliance`, `counter_offer`,
       `book_load`, `escalate_to_human`, `end_call`
-- [ ] Negotiation policy enforced in the tool layer — floor/ceiling/max-counters in code
-- [ ] Full trace written to `run_events`
-- [ ] **Regression suite stays green and grows.** Every tool that enforces policy gets
-      table-driven tests the same way `evaluateCompliance` did — enumerate the boundary,
-      don't sample it. Minimum bar:
-      - `book_load` invariant proven exhaustively: **no input produces
-        `booked_rate_cents > rate_ceiling_cents`**, including at/around the boundary,
-        with counters exhausted, and with a hostile model argument in the args.
-      - Max-counter-count enforced in code, tested at N-1 / N / N+1.
-      - The model never receives `rate_ceiling_cents` — assert on the serialized tool
-        schema and on every prompt/message payload, not just on intent.
-      - Tool-layer tests use a **fake model** (scripted tool calls). No live API in
-        `pnpm test`; the network guard in `src/test/setup.ts` must stay green.
-      - Trace completeness: a run writes one `run_events` row per tool call with args,
-        result, and duration.
-- [ ] **Walking-skeleton eval: one persona, one judge call, one printed score, end to end.**
-      Ugly is fine. This exists so Day 5 is scaling, not building.
+- [x] Negotiation policy enforced in the tool layer — and one step stronger than planned:
+      the model has no argument through which to name a rate at all (`DECISIONS.md` #17)
+- [x] Full trace written to `run_events`
+- [x] **Regression suite green and grown: 171 → 398.**
+      - `book_load` invariant enumerated: 11,200 attempts (40 loads × 7 rates ×
+        5 counter counts × 4 compliance states × 2 load statuses), plus hostile args
+        passed directly to `execute`, bypassing zod
+      - Max-counter-count tested at N-1 / N / N+1, with the schedule pinned to literals
+      - Ceiling absence asserted at the **payload** level — every serialized prompt and
+        tool schema, across all 40 loads
+      - Fake model (`MockLanguageModelV4`) throughout; the network guard stayed green
+      - Trace completeness: one row per tool call with args, result, duration
+      - **Suite mutation-tested.** 11 mutations run; 10 went red immediately, 1 survived
+        and produced a real fix
+- [x] **Walking-skeleton eval**, which found a real defect on its second run and confirmed
+      the fix on its third (`DECISIONS.md` #18)
+- [x] Closed deferred Day 2 item 1 (fetch timeouts + bounded staleness, `DECISIONS.md` #16)
+- [x] Fixed a schema bug found while planning the write path: `carriers.is_out_of_service`
+      was `NOT NULL DEFAULT false` against a three-valued field
 
 ## Day 4 — Interface
 - [ ] Split view: conversation left, live tool trace right (args, result, latency)
@@ -101,4 +103,7 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 | 2026-08-01 | Eval skeleton moved Day 5 → Day 3 | Highest-value and least-familiar component was scheduled last, so any earlier slip threatened it with no runway. Walking skeleton early turns Day 5 into scaling work, which is compressible. | None — Day 3 absorbs it |
 | 2026-08-01 | Added `SocrataCarrierSource` alongside QCMobile | FMCSA WebKey needs a Login.gov account. Rather than block Day 2 on it, the keyless Socrata census API works immediately and QCMobile becomes an upgrade behind the same interface. | ~1h, buys full independence from the key |
 | 2026-08-01 | Out-of-service fixtures are **derived**, not recorded | No keyless FMCSA source reports OOS — the census file has no such column among its 148, and QCMobile 404s without a WebKey. Rather than leave the `OUT_OF_SERVICE` block path untested until the key lands, the QCMobile fixtures are hand-built from a real census record, named `*.derived.json`, and carry a `_derivation` key naming every mutated field. A test enforces the naming. See `DECISIONS.md` #10. | None — real recordings replace them when the key arrives, and the rule and its tests are already written |
+| 2026-08-01 | Day 3: `counter_offer` computes the rate instead of clamping a model-supplied one | The clamp version makes the invariant a validation problem, and every test on that path is a test that our validation is exhaustive. Removing the argument removes the class. | None — simpler tool, stronger claim |
+| 2026-08-01 | Day 3 also took deferred item 1 (fetch timeouts) | Day 3 wraps the lookup in a tool on a live carrier call, so a 300s undici default stopped being theoretical. Cheaper to fix where it is used than to schedule separately. | ~1h, closes the highest-priority Day 2 deferral |
+| 2026-08-01 | Day 3 added a verification gate to `counter_offer` | The eval caught the agent quoting before the FMCSA lookup returned — the model parallelises tool calls, so prompt-stated ordering is not ordering. See `DECISIONS.md` #18. | ~20m, and it is the demo's best single anecdote |
 | 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |

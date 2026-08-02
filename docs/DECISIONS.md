@@ -270,6 +270,186 @@ caught it the first time.
 
 ---
 
+### 16 — A 6s outbound budget, and bounded staleness when it runs out
+**2026-08-01**
+
+Three reviewers flagged the same hole on Day 2: no outbound `fetch` carried an `AbortSignal`,
+so Node's undici default applied. That is roughly **300 seconds** — five minutes of a driver
+holding a phone while a government API decides nothing. Day 3 wraps these calls in a tool on a
+live carrier call, so it gets fixed here.
+
+**The budget is 6s.** Day 2 live verification put a working Socrata query well under 2s, so
+the budget is generous against the happy path and still inside what a human tolerates.
+`DEFAULT_FETCH_TIMEOUT_MS` has a test pinning it to the 5–8s band: raising it should be a
+deliberate edit with a failing test attached, not a quiet drift back toward 300s.
+
+**QCMobile shares one deadline across both of its legs.** It makes two sequential calls, so a
+per-call budget would give the richer source double the worst case of the keyless one — which
+is backwards. The test asserts *signal identity* across the two calls rather than wall-clock
+timing: one signal object created once at the start of the lookup is a complete proof of the
+property and cannot flake.
+
+**On timeout, the question is what to serve.** Failing closed means `LOOKUP_FAILED`, which
+blocks the carrier and escalates — safe, but it also means one slow government API ends the
+call, and the demo, on stage. Serving whatever is cached means a decision made on data of
+unbounded age. Neither is right at the extremes, so the rule has two thresholds:
+
+| Cache age | Behaviour |
+|---|---|
+| ≤ 24h (TTL) | fresh — the cache *is* the answer, no reason raised |
+| 24h – 7d | served, with a `STALE_LOOKUP` **flag** carrying the age |
+| > 7d | refused — `LOOKUP_FAILED`, block, escalate |
+
+The TTL governs the happy path; the 7-day cap governs the degraded one. An FMCSA record from
+last Tuesday is a far better basis for a compliance decision than no record at all, and
+authority status does not usually turn over inside a week. Past the cap, "what we last saw"
+has stopped being evidence about what is true now.
+
+Four constraints fell out of the existing decisions and are worth writing down:
+
+1. **The fallback fires on `error` only, never on `not_found`.** A `not_found` is a real answer
+   from a reachable API. Overriding it with an older record would resurrect a carrier the
+   registry says does not exist — and `LookupResult` exists (#5) precisely to keep "no such
+   carrier" and "the API is down" from collapsing into each other.
+2. **`STALE_LOOKUP` lives in `evaluateLookup`, not in `RULES`.** Staleness is a property of the
+   lookup, not of the carrier. Putting it in `RULES` would hand `evaluateCompliance` — the one
+   deliberately pure function in this system — a fact that does not exist on a `CarrierRecord`,
+   and would drag a clock and a cache into it. A test asserts it is absent from `RULES`.
+3. **Severity is `flag`, not `info`.** The contrast with `OOS_NOT_VERIFIED` (#10) is the whole
+   argument: that one is `info` because it fires on 100% of Socrata lookups, and a flag on
+   everything trains everyone to ignore flags. This one fires only when a government API
+   actually failed to answer. It is rare, so it should be loud.
+4. **A fallback that lands inside the TTL is not flagged.** Reachable via `--refresh`: the
+   forced live call fails and the skipped entry turns out to be an hour old. That data is
+   current. Flagging it stale would be a small lie in a reason string the agent reads aloud.
+
+Timeout messages are also distinguished from failure messages — "did not respond within 6000ms"
+versus "request failed" — because they send whoever debugs them at different systems. And the
+response *body* is covered by the same deadline: `.json().catch(() => null)` used to swallow the
+abort and report a timeout as "unrecognised payload", blaming our parser for the network.
+
+**Rejected:** failing closed with no fallback (one slow API ends the call) · unbounded staleness
+(a decision on data of any age, which is the shape of every bug #10 and #13 exist to prevent) ·
+serving stale silently (the gate would report "checked and clean" about a check that timed out).
+
+---
+
+### 17 — The tool computes the counter; the model never names a rate
+**2026-08-01**
+
+#4 says negotiation policy lives in the tool layer. There are two ways to build that, and the
+difference matters more than it first looks:
+
+- **Model proposes, tool clamps.** The model sends `offer_cents`; the tool rejects anything
+  above ceiling. The invariant holds *by validation*.
+- **Tool computes.** The model reports only what the carrier asked for; the tool decides what
+  to say back. The invariant holds *by construction*.
+
+We build the second. Under the first, `offer_cents` is an argument a carrier can try to steer
+through the model, and every test on that path is a test that our validation is exhaustive.
+Under the second there is no argument to steer: the counter path has no channel through which
+a rate can be named, so exhaustiveness is not something we have to establish. `book_load`
+still validates, because booking is the one place a number legitimately arrives from the model.
+
+The current literature is the reason to prefer the structural version rather than trusting a
+well-tested check plus a careful prompt. Every prompt-level defense measured in 2026 work on
+tool-calling agents — sandwich defense, self-reflection directives, guard-model advisories — is
+inconsistent or actively counterproductive, with hijack rates above 80% on the best-performing
+backbone tested; one paper documents a guard model correctly flagging a malicious command whose
+advisory the main model then ignored, producing RCE anyway. The defense that holds is
+deterministic parameter validation at the tool boundary. Removing the parameter is strictly
+better than validating it.
+
+**The concession curve.** ⚠️ **Superseded by #19 — the head is floor→market, not floor→ceiling.**
+As originally shipped, offers were fixed fractions of the floor→ceiling head, `[0, 0.5, 0.75]`:
+
+| Round | Lands on |
+|---|---|
+| 1 | `floor` — the opening anchor |
+| 2 | **market**, exactly, for the seeded 0.86/1.14 ratios |
+| 3 | halfway between market and ceiling |
+| 4+ | walk away |
+
+Concessions shrink. This is how the buying side actually negotiates: anchor low, manufacture the
+feel of movement while giving away less each time, and decide after two or three rounds instead
+of grinding. `MAX_COUNTERS = 3` comes from the same place — an agent that counters forever is one
+a carrier can simply wait out. That part stands.
+
+The argument that did *not* stand was "the top fraction is 0.75, strictly below 1.0, which is what
+makes the ceiling unreachable on this path rather than merely guarded." Bounding an offer is not
+hiding the number it is computed from. See #19.
+
+Three details that are easy to get wrong and are pinned by tests:
+
+1. **If the carrier asks for less than our scheduled offer, take their number.** Countering
+   upward to "our" number would donate margin for nothing. This is the only place a
+   carrier-supplied value becomes a rate, and it can only ever fire *below* our own offer.
+2. **Rejections carry a code and never a number.** `"above_ceiling"` is the whole answer;
+   "you're $47 over" would be an oracle the model could binary-search to recover the ceiling.
+   Necessary, and — as #19 records — not sufficient on its own: *which* code comes back was
+   itself the comparison result.
+3. **Untrustworthy bounds mean no negotiation at all.** A row with `ceiling < floor` makes the
+   head negative and inverts the schedule — a design that approaches the ceiling from below
+   would start walking away from it. A missing row walks away rather than throwing mid-call.
+
+**Mutation testing found a real hole here.** Every counter-cap test derived its expectations
+from `MAX_COUNTERS`, so adding a fourth counter moved the tests along with the code and all 88
+stayed green — tautology, not coverage. The schedule is now pinned to literals. The lesson
+generalizes: a test that computes its expectation from the thing under test proves nothing, and
+the only reliable way to find those is to break the code on purpose.
+
+**Rejected:** model proposes + clamp (a validated boundary where a removed parameter would do) ·
+a fixed dollar concession (does not scale across a board spanning 60 to 1440 miles) ·
+letting the model counter below the scheduled offer (real option, but it hands back
+discretion the structural argument exists to remove, for a margin gain we cannot measure yet).
+
+---
+
+### 18 — Ordering is a constraint, not an instruction
+**2026-08-01**
+
+The system prompt says, in order: verify the carrier, then present the load, then negotiate.
+The Day 3 eval caught the agent quoting **$2,286.96 before verification came back**.
+
+The cause is not a badly worded prompt. The model issues `lookup_carrier` and `get_load` as a
+single parallel step — which is efficient and usually correct — and then continues before the
+gate's answer has been read. "Do this first" is a statement about a sequence the model is free
+to reorder, and it did.
+
+Booking was never at risk: `book_load` checks compliance independently and refuses
+`carrier_not_verified`. But quoting a rate to a caller who may turn out to be blocked wastes a
+number on a bad actor and, in a demo where the compliance gate is beat #2, looks exactly like
+the failure the project claims to have solved.
+
+So `counter_offer` now refuses until someone has cleared the gate. This is #4 applied to a
+dimension we had not thought of as policy: not just *what* the agent may say, but *when* it is
+allowed to say it. Both are enforced the same way, and for the same reason — a rule the model
+can reorder is a rule the next model revision will reorder differently.
+
+**A flagged carrier still gets quotes.** `flag` means "a human should know", not "refuse", and
+blocking here would stop the agent working with any carrier whose MC is duplicated — which is
+1000+ of them (#11). Only `block` stops a quote.
+
+Two things this validated beyond the fix itself:
+
+1. **The walking skeleton paid for itself on its second run**, which is the argument for #7.
+   The find → fix → confirm loop that Day 6 is supposed to produce ran on Day 3, on a defect
+   no unit test would have found, because the defect was in *when* the model calls things.
+2. **The first run of the eval passed hollowly** — zero counters, no negotiation, because the
+   persona never named a load. The judge said so in its notes and the scorecard still printed
+   PASS. There is now an invariant asserting the negotiation happened, because a green result
+   for a scenario that did not run is worse than a red one. This is the same tautology that let
+   a fourth counter slip past the policy suite (#17), found the same way: by looking at whether
+   the thing could actually have failed.
+
+**Rejected:** strengthening the prompt's ordering language (the failure mode is parallel tool
+calls, which no wording addresses) · forcing sequential tool calls globally via
+`disableParallelToolUse` (slower on every call to fix one ordering constraint) · checking in
+`get_load` instead (pulling a load is not quoting a rate, and refusing it would stop the agent
+answering "is that load still open?" for an unverified caller, which is a reasonable question).
+
+---
+
 ### 7 — Eval skeleton on Day 3, not Day 5
 **2026-08-01**
 
@@ -279,3 +459,61 @@ last meant any earlier slip would threaten it with no runway. A one-persona walk
 on Day 3 turns Day 5 from "build it" into "scale it," which is compressible or cuttable.
 
 See the Amendments table in `PLAN.md`.
+
+---
+
+### 19 — Withholding a value means withholding every function of it
+**2026-08-02** — supersedes the concession-curve half of #17
+
+A pre-landing review broke the central claim of #4 and #17 three different ways. None of them
+was a bug in the ceiling check. All three were the same mistake: treating "the model is never
+told the ceiling" as the property, when the property is "the model cannot obtain the ceiling."
+
+**1. The offers published the function.** Interpolating floor→ceiling made every counter an
+exact affine function of the ceiling. With `[0, 0.5, 0.75]` the emitted offers satisfy
+`ceiling = r3 + (r3 - r2)`, identically, on every load. Two numbers the tool layer handed the
+model recovered the number it was not allowed to see, to the cent. Worse, `RATE_FLOOR_RATIO` and
+`RATE_CEILING_RATIO` are global across all 40 lanes and live in a public repo, so `ceiling =
+market × 1.14` and `get_load` returns market.
+
+The schedule now interpolates **floor→market**, `[0, 0.6, 1]`. Both endpoints are values the
+model is already permitted to see, so no offer can carry information it did not already have.
+The ceiling is not clamped out of the arithmetic; it is absent from it. `isUsablePolicy` now
+requires `floor <= market <= ceiling`, which is what bounds the ladder, and the test asserts the
+structural claim directly: vary the ceiling across three orders of magnitude and every offer
+must be unchanged.
+
+**2. The reason codes were the oracle they were designed not to be.** #17 point 2 is right that
+a rejection must not carry a number, and that was honoured. But `above_ceiling` past the maximum
+and `above_last_offer` below it is a one-bit comparator on the ceiling, and a rejected booking
+consumes no counter, mutates nothing and is not rate-limited — so it could be run as often as
+the model liked. Six probes located the boundary; the seventh booked. The offer guards now run
+*before* the ceiling guard, so every rejection above what we said carries the same code wherever
+the ceiling sits, and every probe below it books rather than answering.
+
+**3. The guard that mattered most was skipped on its null case.** `above_last_offer` was written
+`isValidRateCents(lastOfferedCents) && rateCents > lastOfferedCents`. Before any counter,
+`lastOfferedCents` is null, `isValidRateCents(null)` is false, and the whole branch fell through
+— so `lookup_carrier` → `book_load` at the walk-away maximum booked, to the cent, with zero
+negotiation. The stated invariant (`booked <= ceiling`) held the entire time. A null case is a
+case; it now returns `no_offer_made`.
+
+**The eval could not have caught any of it.** Its ceiling invariant was
+`!agentText.includes(String(ceiling))` — integer cents compared against prose. A ceiling of
+`303156` is spoken "$3,031.56", which contains no such substring, so the check guarding the
+project's headline claim was green by construction and would have passed a verbatim disclosure.
+It now compares digit-for-digit against each numeric token, in cents and both dollar roundings.
+The judge could not cover for it either: the judge is never told the ceiling.
+
+The generalisation, and the reason this is a decision and not a changelog entry: **an allowlist
+is a claim about representation, not about information.** `sanitize.ts` withholds the ceiling
+column faithfully and always did. Everything above leaked through arithmetic, through control
+flow, and through a test that could not fail. When the requirement is that something stay
+unknown, the question is never "did we send it" — it is "what can be computed from what we did
+send," and that has to be pinned by a test that would go red if the answer changed.
+
+**Rejected:** per-load jitter on the concession fractions (the derivation is in a public repo, so
+it obfuscates rather than removes) · collapsing all rejections to one opaque code (loses the
+internal diagnostics the trace exists for, when ordering the checks already closes the oracle) ·
+rate-limiting failed booking attempts (treats the symptom; with the offer guard checked first
+there is nothing left to probe).
