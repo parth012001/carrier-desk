@@ -213,6 +213,27 @@ describe("projectCall — resilience", () => {
     expect(view.trace).toHaveLength(4);
   });
 
+  it("numbers trace rows across the whole call, not per turn", () => {
+    // Found by looking at the screen. `CallEvent.index` is local to one HTTP
+    // connection and restarts at zero every turn, so using it would label the
+    // rows 1, 2, 1, 2 — and as a React key it would collide outright. This is
+    // the client-side twin of the run_events.seq fix.
+    const turnOne: CallEvent[] = [
+      trace(0, null, { type: "user_message", result: "MC 186800" }),
+      trace(1, "lookup_carrier", { result: { found: false } }),
+      trace(2, "get_load", { result: { found: false, load_ref: "LD-10401" } }),
+    ];
+    const turnTwo: CallEvent[] = [
+      trace(0, null, { type: "user_message", result: "What can you pay?" }),
+      trace(1, "counter_offer", { result: { action: "error", reason: "load_not_found" } }),
+    ];
+
+    const view = projectCall([...turnOne, ...turnTwo]);
+
+    expect(view.trace.map((row) => row.ordinal)).toEqual([1, 2, 3]);
+    expect(new Set(view.trace.map((row) => row.ordinal)).size).toBe(view.trace.length);
+  });
+
   it("keeps every tool call in the trace regardless of what it means", () => {
     // The trace pane is the raw record. It renders rows the rest of the view
     // has no opinion about, which is what makes it worth reading.

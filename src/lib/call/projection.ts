@@ -25,7 +25,15 @@ import type { CallEvent } from "./events";
 export type Turn = { speaker: "carrier" | "agent"; text: string };
 
 export type TraceRow = {
-  index: number;
+  /**
+   * Position in the whole call, counted here.
+   *
+   * Not `CallEvent.index`, which is local to one connection and restarts at
+   * zero every turn — as a label it would count 1, 2, then 1 again, and as a
+   * React key it would collide outright. The durable equivalent is
+   * `run_events.seq`; this is the client-side counterpart of the same fix.
+   */
+  ordinal: number;
   name: string;
   args: unknown;
   result: unknown;
@@ -228,7 +236,7 @@ export function reduceCall(view: CallView, event: CallEvent): CallView {
 
   if (event.name === null) return view;
   const row: TraceRow = {
-    index: event.index,
+    ordinal: view.trace.length + 1,
     name: event.name,
     args: event.args,
     result: event.result,

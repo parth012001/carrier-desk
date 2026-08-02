@@ -1,8 +1,23 @@
 @import "tailwindcss";
 
+/**
+ * A dispatch console, not a chat app.
+ *
+ * The surface is dark because this sits open all day beside a phone, and the
+ * accents are the compliance verdicts themselves — allow, flag, block — so the
+ * one thing that decides whether freight moves is also the only thing on the
+ * screen that is allowed to be loud.
+ *
+ * Freight paperwork is monospace and tabular: MC numbers, DOT numbers, load
+ * refs and rates all get read aloud over a phone, digit by digit. So mono
+ * carries every identifier and every figure, and the proportional face is kept
+ * for prose. `tabular-nums` is not decorative — rates stream in live, and
+ * proportional digits make the column jitter on every update.
+ */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #09090b;
+  --foreground: #fafafa;
 }
 
 @theme inline {
@@ -12,15 +27,58 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Was `Arial, Helvetica, sans-serif` from create-next-app, which overrode the
+     Geist faces that layout.tsx has been loading all along. */
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Every figure in this interface is compared against another figure directly
+   above or below it, so the digits have to line up in a column. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/**
+ * A trace row landing.
+ *
+ * The one piece of motion in the interface, and it is doing a job: the rows
+ * arrive at the speed the tools actually return, so the animation is what
+ * makes a 400ms FMCSA lookup feel different from an 8ms cache hit. Everything
+ * else on the page holds still.
+ */
+@keyframes trace-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-0.25rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.trace-row-in {
+  animation: trace-row-in 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trace-row-in {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* The composer and the trace pane both scroll. A hairline thumb keeps the
+   chrome out of the way of the content, which is the part being read. */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-zinc-700) transparent;
 }
