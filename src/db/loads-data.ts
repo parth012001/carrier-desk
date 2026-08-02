@@ -1,3 +1,6 @@
+import { getTableColumns } from "drizzle-orm";
+
+import { loads } from "./schema";
 import type { NewLoad } from "./schema";
 
 /**
@@ -128,4 +131,27 @@ export function buildLoad(lane: Lane, i: number, now: Date): NewLoad {
 
 export function buildLoads(now: Date): NewLoad[] {
   return LANES.map((lane, i) => buildLoad(lane, i, now));
+}
+
+/** Identity and provenance. Everything else is re-seedable. */
+const PRESERVED_ON_RESEED = ["id", "createdAt"] as const;
+
+/**
+ * The columns `pnpm db:seed` overwrites when a load already exists.
+ *
+ * Seeding upserts on `ref` rather than deleting the table, because
+ * `negotiations.load_id` and `runs.load_id` are foreign keys into `loads` with
+ * no ON DELETE clause — so once any conversation has countered or booked,
+ * `DELETE FROM loads` aborts on a constraint violation and the board can never
+ * be reset again. Both constraints are `NO ACTION`, verified against the live
+ * database, not assumed.
+ *
+ * Derived from the table rather than hand-listed so a new column is refreshed
+ * by default. Forgetting one is the quiet failure here: the board would look
+ * reset while a stale value survived underneath.
+ */
+export function reseededLoadColumns(): string[] {
+  return Object.keys(getTableColumns(loads)).filter(
+    (key) => !(PRESERVED_ON_RESEED as readonly string[]).includes(key),
+  );
 }
