@@ -1,10 +1,10 @@
-import { type ToolSet, tool } from "ai";
+import { type ModelMessage, type ToolSet, tool } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { scriptedModel } from "@/test/fake-model";
 
-import { DEFAULT_MAX_STEPS, runCall } from "./run";
+import { DEFAULT_MAX_STEPS, PartialTurnError, runCall } from "./run";
 import { InMemoryTraceSink, type TraceSink, withTrace } from "./trace";
 
 /**
@@ -38,6 +38,20 @@ function toolsWith(sink: InMemoryTraceSink): ToolSet {
     }),
   };
 }
+
+/** The content parts of a message list, flattened. A string content counts as text. */
+type Part = { type: string; toolName?: string; text?: string };
+const partsOf = (messages: readonly ModelMessage[]): Part[] =>
+  messages.flatMap((message) =>
+    typeof message.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : (message.content as Part[]),
+  );
+
+const named = (messages: readonly ModelMessage[], type: string): (string | undefined)[] =>
+  partsOf(messages)
+    .filter((part) => part.type === type)
+    .map((part) => part.toolName);
 
 describe("runCall — termination", () => {
   it("stops when the agent ends the call", async () => {
@@ -246,5 +260,76 @@ describe("runCall — the trace", () => {
     expect(result.text).toBe("Still available. Want it?");
     expect(result.toolCalls).toEqual(["get_load"]);
     vi.restoreAllMocks();
+  });
+});
+
+describe("runCall — the history it hands back", () => {
+  it("carries every step's messages, not just the last one's", async () => {
+    // `GenerateTextResult.response` is a getter for `finalStep.response`, so
+    // reading `result.response.messages` returned the closing text and dropped
+    // the tool call and its result — the two things a second turn exists to
+    // remember. The next turn's history is built from this list.
+    const sink = new InMemoryTraceSink();
+    const model = scriptedModel([
+      { call: [{ tool: "get_load", input: { load_ref: "LD-10400" } }] },
+      { say: "Still available. Want it?" },
+    ]);
+
+    const result = await runCall({
+      model,
+      tools: toolsWith(sink),
+      messages: [{ role: "user", content: "LD-10400?" }],
+      trace: sink,
+    });
+
+    expect(result.responseMessages.map((m) => m.role)).toEqual(["assistant", "tool", "assistant"]);
+    expect(named(result.responseMessages, "tool-call")).toEqual(["get_load"]);
+    expect(named(result.responseMessages, "tool-result")).toEqual(["get_load"]);
+    expect(partsOf(result.responseMessages).some((p) => p.text === "Still available. Want it?")).toBe(
+      true,
+    );
+  });
+
+  it("hands the completed steps back on the failure path instead of losing them", async () => {
+    // The tools in a finished step have already run. Whatever the next step does
+    // cannot un-run them, so the messages that record them have to survive it —
+    // see CLAUDE.md, "the model's history is never less than what the tool layer
+    // has already done."
+    //
+    // The scripted model is one turn short, so the loop's second model call
+    // throws after step 1 has completed. That is the shape of a real mid-turn
+    // failure: an overloaded provider, a dropped connection, a step timeout.
+    const sink = new InMemoryTraceSink();
+    const model = scriptedModel([{ call: [{ tool: "get_load", input: { load_ref: "LD-10400" } }] }]);
+
+    const failure = await runCall({
+      model,
+      tools: toolsWith(sink),
+      messages: [{ role: "user", content: "LD-10400?" }],
+      trace: sink,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(PartialTurnError);
+    const partial = failure as PartialTurnError;
+    expect(named(partial.responseMessages, "tool-call")).toEqual(["get_load"]);
+    expect(named(partial.responseMessages, "tool-result")).toEqual(["get_load"]);
+    // The original is not swallowed. Whoever reads the log still gets the cause.
+    expect(String((partial.cause as Error).message)).toContain("script exhausted");
+  });
+
+  it("carries nothing when the turn failed before a step finished", async () => {
+    // Nothing ran, so there is nothing to commit — and a caller that appended an
+    // empty list would stack an orphaned user turn on every retry.
+    const model = scriptedModel([]);
+
+    const failure = (await runCall({
+      model,
+      tools: toolsWith(new InMemoryTraceSink()),
+      messages: [{ role: "user", content: "LD-10400?" }],
+      trace: new InMemoryTraceSink(),
+    }).catch((error: unknown) => error)) as PartialTurnError;
+
+    expect(failure).toBeInstanceOf(PartialTurnError);
+    expect(failure.responseMessages).toEqual([]);
   });
 });

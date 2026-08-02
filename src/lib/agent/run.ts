@@ -52,9 +52,35 @@ export type RunCallResult = {
    * history for the next one. A multi-turn call has to carry tool results
    * forward or the model loses what it just learned — and it is also what keeps
    * the cached prefix growing instead of resetting.
+   *
+   * Every step's, not the last one's. See the accumulator in `runCall`.
    */
   responseMessages: ModelMessage[];
 };
+
+/**
+ * A turn that failed partway, carrying the steps that did complete.
+ *
+ * The two halves of a turn are not equally reversible, and that asymmetry is
+ * the whole reason this type exists. `messages` is a value a caller can throw
+ * away; the `negotiations` row `counter_offer` wrote and the counter it consumed
+ * are not. A caller that discards a failed turn entirely therefore does not
+ * restore the world — it only forgets half of it, and the half it forgets is the
+ * half that would have told the model what it already did.
+ *
+ * See CLAUDE.md, "The model's history is never less than what the tool layer has
+ * already done", and `docs/DECISIONS.md` #22.
+ */
+export class PartialTurnError extends Error {
+  constructor(
+    cause: unknown,
+    /** Every completed step's messages, in order. Empty if none finished. */
+    readonly responseMessages: ModelMessage[],
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = "PartialTurnError";
+  }
+}
 
 export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
   const {
@@ -69,7 +95,7 @@ export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
   // The carrier's turn goes in the trace before anything acts on it, so a run
   // that crashes mid-call still shows what was said to it.
   // `writeTrace`, not `trace.write`: a sink that throws must never be able to
-  // fail the call it is describing. In `onStepFinish` below that is not
+  // fail the call it is describing. In `onStepEnd` below that is not
   // theoretical — the callback's rejection propagates out of `generateText`,
   // so a trace write failing on step 4 would abort a run whose `book_load` on
   // step 3 had already committed.
@@ -78,35 +104,66 @@ export async function runCall(options: RunCallOptions): Promise<RunCallResult> {
     await writeTrace(trace, { type: "user_message", result: lastUserMessage.content });
   }
 
-  const result = await generateText({
-    model,
-    // The object form, not a bare string: only this one can carry the cache
-    // breakpoint. See models.ts.
-    instructions: cachedInstructions(instructions),
-    messages,
-    tools,
-    providerOptions: AGENT_PROVIDER_OPTIONS,
-    // Two independent stops. The terminal tools are the ordinary way a call
-    // ends; the step cap is the backstop for a model that will not stop, and
-    // it is why a runaway loop costs a bounded number of API calls.
-    stopWhen: [isStepCount(maxSteps), hasToolCall(...TERMINAL_TOOLS)],
-    onStepFinish: async ({ text }) => {
-      if (text.trim() !== "") await writeTrace(trace, { type: "assistant_message", result: text });
-    },
-  });
+  /**
+   * Accumulated as steps finish, rather than read off the result at the end.
+   *
+   * The failure path is why. A step that finished has already run its tools,
+   * and a tool that ran has already moved `CallState` and written its rows.
+   * `generateText` surfaces nothing at all when a later step throws, so a caller
+   * that waits for the return value has no way to keep what completed — and
+   * dropping it hands the retry a model that believes it is opening a
+   * negotiation the tool layer has already counted.
+   *
+   * The success path was also wrong. `GenerateTextResult.response` is a getter
+   * for `finalStep.response`, so `result.response.messages` is the **last**
+   * step's messages alone: every earlier step's tool call and tool result was
+   * being dropped from the history a multi-turn call carries forward. This is
+   * also narrower than `result.responseMessages`, which prepends any response
+   * messages already sitting in `messages` — those are the caller's, and the
+   * caller is the one appending to them.
+   */
+  const responseMessages: ModelMessage[] = [];
 
-  const toolCalls = result.steps.flatMap((step) => step.toolCalls).map((call) => call.toolName);
+  try {
+    const result = await generateText({
+      model,
+      // The object form, not a bare string: only this one can carry the cache
+      // breakpoint. See models.ts.
+      instructions: cachedInstructions(instructions),
+      messages,
+      tools,
+      providerOptions: AGENT_PROVIDER_OPTIONS,
+      // Two independent stops. The terminal tools are the ordinary way a call
+      // ends; the step cap is the backstop for a model that will not stop, and
+      // it is why a runaway loop costs a bounded number of API calls.
+      stopWhen: [isStepCount(maxSteps), hasToolCall(...TERMINAL_TOOLS)],
+      onStepEnd: async (step) => {
+        // Recorded first, before anything that can throw or await. A step that
+        // reached here is a step whose tools have run, whatever happens next.
+        responseMessages.push(...step.response.messages);
+        if (step.text.trim() !== "") {
+          await writeTrace(trace, { type: "assistant_message", result: step.text });
+        }
+      },
+    });
 
-  return {
-    text: result.text,
-    stepCount: result.steps.length,
-    toolCalls,
-    // A run that hits the cap without a terminal tool did not finish; it was
-    // cut off. The caller needs to be able to tell those apart.
-    stoppedOnStepCap:
-      result.steps.length >= maxSteps &&
-      !toolCalls.some((name) => (TERMINAL_TOOLS as readonly string[]).includes(name)),
-    usage: result.usage,
-    responseMessages: result.response.messages,
-  };
+    const toolCalls = result.steps.flatMap((step) => step.toolCalls).map((call) => call.toolName);
+
+    return {
+      text: result.text,
+      stepCount: result.steps.length,
+      toolCalls,
+      // A run that hits the cap without a terminal tool did not finish; it was
+      // cut off. The caller needs to be able to tell those apart.
+      stoppedOnStepCap:
+        result.steps.length >= maxSteps &&
+        !toolCalls.some((name) => (TERMINAL_TOOLS as readonly string[]).includes(name)),
+      usage: result.usage,
+      responseMessages,
+    };
+  } catch (error) {
+    // Rethrown, not swallowed — the turn did fail and the caller has to know.
+    // What changes is that the failure now carries the part that succeeded.
+    throw new PartialTurnError(error, responseMessages);
+  }
 }

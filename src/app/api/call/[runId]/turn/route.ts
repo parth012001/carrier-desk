@@ -2,7 +2,7 @@ import type { ModelMessage } from "ai";
 import { z } from "zod";
 
 import { agentModel } from "@/lib/agent/models";
-import { runCall } from "@/lib/agent/run";
+import { PartialTurnError, runCall } from "@/lib/agent/run";
 import { CallbackTraceSink, TeeTraceSink } from "@/lib/agent/trace";
 import { type CallEvent, encodeCallEvent, toCallEvent } from "@/lib/call/events";
 import { sessions } from "@/lib/call/session";
@@ -64,8 +64,10 @@ export async function POST(
   session.inFlight = true;
 
   const userMessage: ModelMessage = { role: "user", content: parsed.data.message };
-  // Built as a candidate, not pushed. If the turn fails the session is left
-  // exactly as it was, so a retry does not stack orphaned user turns.
+  // Built as a candidate, not pushed. A turn that never reaches the model leaves
+  // the session exactly as it was, so a retry does not stack orphaned user turns.
+  // A turn that reaches it and fails partway is a different case entirely — see
+  // the catch below.
   const turnMessages = [...session.messages, userMessage];
 
   const encoder = new TextEncoder();
@@ -121,6 +123,20 @@ export async function POST(
             });
           })
           .catch((error: unknown) => {
+            // Only `messages` was ever a candidate. The tools mutated
+            // `CallState` as they executed and wrote their rows on the way past,
+            // and none of that is being rolled back — `counter_offer` consumed a
+            // counter, `book_load` may have covered a load. Discarding the steps
+            // that produced those effects would not restore the world, it would
+            // only hide half of it: the retry would hand the model rung 2 of the
+            // concession schedule while it believes it is opening.
+            //
+            // Complete steps only, which is what `PartialTurnError` carries, so
+            // a half-generated assistant turn is never persisted. Empty means
+            // nothing ran and the session is genuinely untouched.
+            if (error instanceof PartialTurnError && error.responseMessages.length > 0) {
+              session.messages = [...turnMessages, ...error.responseMessages];
+            }
             console.error(`[call ${runId}] turn failed:`, error);
             send({
               kind: "error",

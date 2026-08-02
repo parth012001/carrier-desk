@@ -614,3 +614,44 @@ remembering because they are the same class of error #19 was about:
 row, so a projection would be dead code. The carrier's phone number crossing to the broker's
 screen is deliberate — they are on a call with that carrier — and is recorded here rather than
 left implicit.
+
+### 22 — A failed turn commits the steps that completed
+**2026-08-02** — Day 4 review close-out
+
+The turn route built `turnMessages` as a candidate and only assigned it to `session.messages` on
+success, with a comment saying a failed turn leaves the session exactly as it was. That is true
+of `messages` and false of everything else. Tools mutate `CallState` as they execute and write
+their rows on the way past, so a `counter_offer` on step 2 followed by a failure on step 5 left
+`countersUsedByLoad` at 1 with nothing in the history to show for it. The retry then had a model
+that believed it was opening while the tool layer handed it rung 2 of `CONCESSION_SCHEDULE =
+[0, 0.6, 1]`. Two failures and the carrier's first sentence gets the lane rate. The ceiling
+invariant survives that; the claim that a negotiation happened does not.
+
+**The fix does not roll `CallState` back**, and that direction was considered and rejected. It
+mirrors effects already committed to Postgres — `counter_offer` wrote a `negotiations` row,
+`book_load` wrote `covered` — so rewinding it would make the agent forget freight it had already
+booked, which is a worse bug than the one being fixed. A snapshot per turn has the same problem
+in slower motion: it makes the in-memory half of the world disagree with the durable half, and
+the durable half is the one a dock is scheduled against.
+
+So the other half moves instead. `runCall` accumulates each completed step's messages in
+`onStepEnd` and, on failure, throws a `PartialTurnError` carrying them; the route commits those
+rather than discarding them. Complete steps only, which is exactly what the callback fires for,
+so a half-generated assistant turn is never persisted. A turn that failed before any step
+finished carries nothing and the session really is untouched — that case is what the original
+comment described, and it is now the only case it describes.
+
+`runCall` stays headless: no HTTP, no session, model still an argument, and the eval calls it
+unchanged. Day 5 needs that more than the interface does.
+
+**A second bug fell out of it.** `runCall` returned `result.response.messages`, and
+`GenerateTextResult.response` is a getter for `finalStep.response` in `ai@7.0.48`
+(`node_modules/ai/dist/index.js:6148`) — so the history carried forward between turns was the
+final step's messages alone, with every earlier step's tool call and tool result dropped. It was
+invisible because `CallState` carries the parts that matter for policy and the agent simply
+re-read what it had forgotten. The accumulator fixes it as a side effect; a test asserts the
+tool traffic is present and goes red against the old expression.
+
+A history that ends in tool results is resumable, which the fix depends on: `groupIntoBlocks` in
+`@ai-sdk/anthropic` folds a `tool` message and the following `user` message into one user block,
+so appending the next turn on top of a partial one converts cleanly.

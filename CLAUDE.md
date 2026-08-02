@@ -68,6 +68,13 @@ pnpm fixture:record <MC> <label>       # record a real Socrata payload as an off
   *and* its `SourceCapabilities` entry is `false` — never a defaulted `false`/`0`. The gate
   has to be able to tell *checked and clean* from *never checked*; anything else silently
   clears carriers on questions nobody asked. See `DECISIONS.md` #10.
+- **The model's history is never less than what the tool layer has already done.** Tools move
+  `CallState` and write their rows as they execute, so `messages` is the only half of a turn
+  that *can* be rolled back — which is exactly why it must not be. A turn that fails partway
+  commits the steps that completed; discarding them does not restore the world, it hides half
+  of it, and the half it hides is the half that would have told the model it already countered.
+  **`CallState` is never rewound the other way:** it mirrors effects already in Postgres, and
+  an agent that forgets freight it booked is a worse bug than the one being fixed.
 - **Every agent run writes a full trace** to `run_events` — one row per tool call with args,
   result, and duration. Observability is a feature of the demo, not a debug aid.
 - **The agent core is headless.** Conversation policy is separate from transport, so the eval
