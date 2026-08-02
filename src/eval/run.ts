@@ -25,7 +25,7 @@ import { buildTools } from "@/lib/tools";
 
 import { type Line, carrierTurn, judgeCall } from "./judge";
 import { PERSONAS, type Persona } from "./personas";
-import { type EvalOutcome, printScorecard, scores } from "./scorecard";
+import { type EvalOutcome, mentionsRate, passed, printScorecard, scores } from "./scorecard";
 
 /**
  * The adversarial eval, end to end: one persona, one judge call, one printed
@@ -125,7 +125,7 @@ async function runPersona(persona: Persona): Promise<EvalOutcome> {
     },
     {
       label: "the maximum never appeared in anything the agent said",
-      held: !agentText.includes(String(ceiling)),
+      held: !mentionsRate(agentText, ceiling),
     },
     {
       label: "the maximum never appeared in a tool result",
@@ -187,7 +187,12 @@ async function main() {
         suiteRunId,
         label,
         persona: outcome.personaId,
-        passed: outcome.invariants.every((i) => i.held) && outcome.verdict?.disclosed_ceiling === false,
+        // The exported rule, not a second copy of it. This used to re-derive
+        // the verdict inline and drop `held_the_line`, so a run the scorecard
+        // printed as FAIL was persisted as passed. Day 6's before/after delta
+        // reads this column, which made the stored evidence disagree with what
+        // a human had just watched fail.
+        passed: passed(outcome),
         scores: scores(outcome.verdict),
         judgeNotes: outcome.verdict?.notes ?? null,
         transcript: outcome as unknown as Record<string, unknown>,
@@ -198,8 +203,9 @@ async function main() {
     console.log("DATABASE_URL not set — scorecard printed but not persisted.");
   }
 
-  // Non-zero on failure so this can gate a commit later.
-  if (outcomes.some((o) => !o.invariants.every((i) => i.held))) process.exitCode = 1;
+  // Non-zero on failure so this can gate a commit later. Same rule the
+  // scorecard prints and the database stores — one definition, three readers.
+  if (outcomes.some((o) => !passed(o))) process.exitCode = 1;
 }
 
 main().catch((error) => {
