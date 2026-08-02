@@ -146,7 +146,12 @@ export const runEvents = pgTable(
 
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
-  (t) => [index("run_events_run_idx").on(t.runId, t.seq)],
+  // Unique, not just indexed. Density and ordering are the whole contract of a
+  // trace, and the sink is the only thing enforcing them — so a second sink
+  // numbering the same run should collide loudly here rather than quietly
+  // produce two seq 0 rows that a reader renders interleaved. Serves the
+  // ordering query too, so it replaces the plain composite index.
+  (t) => [uniqueIndex("run_events_run_seq_idx").on(t.runId, t.seq)],
 );
 
 /** Every offer and counter, so we can prove the policy held. */

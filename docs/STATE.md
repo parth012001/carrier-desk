@@ -178,8 +178,14 @@ Ranked. Each was confirmed by reading the code; several were reproduced against 
 9. **The 7-day stale-cache fallback turns a failed FMCSA check from block into flag.** Bounded
    and documented (#16), but it is an authorization check that now defaults to allow on failure,
    and the API being down is when an attacker would prefer to call.
-10. **`DrizzleTraceSink.seq` is per-instance** with no unique index on `(run_id, seq)`, so turn 2
-    in a new process restarts at 0 and silently duplicates.
+10. ~~**`DrizzleTraceSink.seq` is per-instance**~~ **FIXED on Day 4.** Numbering now resolves
+    lazily from `max(seq)` for the run, so a sink built for turn 2 continues rather than
+    restarting at 0. `(run_id, seq)` is a `uniqueIndex` now — verified zero existing duplicates
+    (14 events / 2 runs) before pushing, and it replaces the redundant plain composite index.
+    The reservation advances synchronously behind a promise chain because the model issues tool
+    calls in parallel within a step, so overlapping writes are real and a read-then-increment
+    would hand both the same number. Day 4 forced this: one sink per HTTP request meant turn 2
+    restarted at 0 and the trace pane interleaved it into turn 1.
 11. **Unwritten columns:** `runs.compliance_decision`, `eval_results.run_id`, and every carrier
     Twin field (`total_booked`, `last_rate_accepted_cents`, `last_load_ref`). `runs.load_id` was
     fixed on this branch. Also: the eval writes runs to `InMemoryRunSink`, so `is_eval` is never

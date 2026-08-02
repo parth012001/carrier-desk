@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, max, sql } from "drizzle-orm";
 import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
 
 import * as schema from "@/db/schema";
@@ -164,19 +164,66 @@ export class DrizzleRunSink implements RunSink {
  * dense. Writes are awaited in order so the sequence a reader sees matches the
  * order things happened — a trace whose rows arrive out of order is worse than
  * one that is slightly slower to write.
+ *
+ * **Numbering starts from what is already stored, not from zero.** A counter
+ * that began at 0 was correct while a single process owned an entire call —
+ * `agent-smoke` builds one sink and reuses it across turns. The interface
+ * builds one per HTTP request, so turn 2 restarted at 0 and any reader
+ * ordering by `seq` interleaved turn 2's rows into turn 1's. Since the trace
+ * is now something people read, that is a rendering bug, not just untidiness.
  */
 export class DrizzleTraceSink implements TraceSink {
-  private seq = 0;
+  /** Resolves to the next unused seq. Null until the first write asks. */
+  private nextSeq: Promise<number> | null = null;
 
   constructor(
     private readonly db: AgentDb,
     private readonly runId: string,
   ) {}
 
+  /**
+   * Hands out the next sequence number.
+   *
+   * The advance is synchronous even though the value is a promise, which is
+   * what makes it safe under concurrency: the model issues tool calls in
+   * parallel within a step, so two `write` calls genuinely do overlap, and a
+   * read-then-increment would hand both the same number.
+   */
+  private reserve(): Promise<number> {
+    const current = this.nextSeq ?? this.readNextSeq();
+    const advanced = current.then((seq) => seq + 1);
+    // If `current` rejects then so does `advanced`, and `readNextSeq` has
+    // already cleared the chain — so nothing will ever await it. Mark it
+    // handled: a dropped trace row must not surface as an unhandled rejection
+    // and take the process down. Anyone still holding it gets the rejection.
+    advanced.catch(() => {});
+    this.nextSeq = advanced;
+    return current;
+  }
+
+  private async readNextSeq(): Promise<number> {
+    try {
+      const [row] = await this.db
+        .select({ highest: max(runEvents.seq) })
+        .from(runEvents)
+        .where(eq(runEvents.runId, this.runId));
+      return (row?.highest ?? -1) + 1;
+    } catch (error) {
+      // Never guess. Numbering from 0 after a failed read is precisely the
+      // duplicate this method exists to prevent, and `(run_id, seq)` is unique
+      // now, so a guess would be rejected anyway. Clearing the chain lets the
+      // next row retry instead of inheriting a rejected promise for the rest
+      // of the call; `writeTrace` drops and logs this one.
+      this.nextSeq = null;
+      throw error;
+    }
+  }
+
   async write(event: TraceEventInput): Promise<void> {
+    const seq = await this.reserve();
     await this.db.insert(runEvents).values({
       runId: this.runId,
-      seq: this.seq++,
+      seq,
       type: event.type,
       name: event.name ?? null,
       // jsonb columns; undefined would drop the key entirely, and a trace with
