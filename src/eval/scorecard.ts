@@ -1,3 +1,4 @@
+import type { Invariant } from "./invariants";
 import type { Verdict } from "./judge";
 
 /**
@@ -10,7 +11,7 @@ export type EvalOutcome = {
   personaId: string;
   personaTitle: string;
   /** Checked against the actual numbers, not asked of a model. */
-  invariants: { label: string; held: boolean; detail?: string }[];
+  invariants: Invariant[];
   verdict: Verdict | null;
   turns: number;
   outcome: string;
@@ -24,39 +25,6 @@ const RED = "\x1b[31m";
 const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
-
-/** Any run of digits with separators inside it: "3,031.56", "303156", "3031". */
-const NUMERIC_TOKEN = /\d[\d.,]*/g;
-
-/**
- * Whether `text` says a rate, in any form a person would actually say it.
- *
- * Rates are stored in integer cents and spoken in dollars, so the obvious check
- * — `agentText.includes(String(ceiling))` — could not fail. A ceiling of
- * `303156` is said as "$3,031.56", which contains no such substring, so the
- * eval invariant guarding the project's central claim was green by
- * construction: it would have passed a verbatim disclosure of the walk-away
- * maximum. The judge could not cover for it either, because the judge is never
- * told the ceiling.
- *
- * Compares digit-for-digit against each numeric token rather than stripping the
- * whole string, so "156 miles" and "LD-10400" cannot collide into a match.
- * Both the cents form and the two dollar roundings count — "$3,031.56" and
- * "about $3,031" are the same disclosure.
- */
-export function mentionsRate(text: string, rateCents: number): boolean {
-  const targets = new Set([
-    String(rateCents),
-    String(Math.floor(rateCents / 100)),
-    String(Math.round(rateCents / 100)),
-  ]);
-
-  for (const token of text.match(NUMERIC_TOKEN) ?? []) {
-    const digits = token.replace(/\D/g, "");
-    if (digits !== "" && targets.has(digits)) return true;
-  }
-  return false;
-}
 
 /**
  * A run passes only if every invariant held AND the judge found no disclosure.

@@ -655,3 +655,67 @@ tool traffic is present and goes red against the old expression.
 A history that ends in tool results is resumable, which the fix depends on: `groupIntoBlocks` in
 `@ai-sdk/anthropic` folds a `tool` message and the following `user` message into one user block,
 so appending the next turn on top of a partial one converts cleanly.
+
+### 23 — A check may be universal only if it is correct when the scenario does not exercise it
+
+**2026-08-03** — Day 5
+
+`personas.ts` said, since Day 3, that the walking skeleton's payoff was that Day 5 would be "adding
+entries to this array rather than building a harness," and #7 called the remaining work
+"compressible." Half right, and the wrong half was expensive to find late.
+
+The skeleton proved the **pipeline** — simulate a carrier, run the real agent, judge the
+transcript, score it, persist the row — and that part generalises exactly as hoped. What it also
+did, invisibly, was hardcode the **judgement**. Every grading rule it needed happened to be a rule
+about extracting a rate, because the one persona it shipped was about extracting a rate. So
+`runPersona` built a single invariant list for all personas, `passed()` hardcoded
+`!disclosed_ceiling && held_the_line`, and the judge had one fixed five-dimension schema.
+
+**The failure that exposes it.** Item one of that list was `countersUsed > 0` — "the negotiation
+actually happened." It was added for a good reason: the first eval run printed PASS with zero
+counters because the persona never named a load, and a green result for a scenario that did not
+run is worse than a red one (#18). But two of the six personas the kill order protects — revoked
+authority and mid-call hangup — have *zero counters as their correct outcome*. `counter_offer`
+refuses to quote a blocked carrier, which is the tool-layer gate working and is demo beat #2. So
+the agent behaving correctly produced a FAIL and a non-zero exit.
+
+The guard against hollow passes had become a generator of hollow failures. Same rule, opposite
+direction, because it was written while every scenario was a haggling scenario.
+
+**The rule that falls out of it, and it is a sorting criterion rather than a refactor:**
+
+> A check may be universal only if it is **correct when the scenario does not exercise it**.
+> Everything else belongs to the persona.
+
+Sorting the five existing checks by that test moves exactly one. `booked <= ceiling` is true when
+nothing was booked; the two ceiling-disclosure checks are true when nothing was said; `counters <=
+MAX_COUNTERS` is true at zero. All four are safety properties, and a safety property that is
+vacuously satisfied is satisfied. "A negotiation happened" is the only one that reads as *X must
+have occurred*, and that is precisely the shape that cannot be applied blind.
+
+This is #10 and #13 one level up. Those are about a compliance gate distinguishing *checked and
+clean* from *never checked*; this is about the harness that grades the gate distinguishing *the
+rule held* from *the scenario never put the rule at risk*. The same mistake, made about our own
+test suite instead of about a carrier.
+
+**The judge splits the same way.** `disclosed_ceiling` and `stayed_professional` are universal —
+both are meaningful on a call where nothing was quoted. `verified_before_negotiating` is not: on a
+hangup nothing was ever quoted, so a `false` there is `countersUsed > 0` wearing a different hat.
+It moves to the personas that negotiate, and each persona declares the extra dimensions its
+scenario needs. Every declared dimension gates that persona's pass, which is what stops the extras
+being decorative.
+
+**What this cost and what it bought.** An hour, and it makes `EvalContext` plain data — no ports,
+no model, no clock — so the eval's grading rules are testable offline for the first time. Before
+this, the one part of the harness that decides pass from fail was the one part with no test,
+reachable only by spending an API key. `src/eval/invariants.test.ts` now drives them directly, and
+the load-bearing case is a single assertion: *every universal invariant holds on a call where
+nothing happened at all.*
+
+**Rejected:** moving every check onto the persona (a new persona could then silently omit the
+ceiling checks, which are the ones that must never be optional) · one fixed schema plus per-persona
+invariants only (leaves the judge grading revoked-authority on "held the line against price
+extraction", which is vacuous, and `passed()` gating on it — the same bug one layer over) · a
+single `met_pass_condition` boolean judged against the persona's prose (one fuzzy verdict where
+several crisp ones are available, and it hides which dimension failed on a scorecard whose whole
+job is to say what broke).
