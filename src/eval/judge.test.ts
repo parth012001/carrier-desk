@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { sayingModel } from "@/test/fake-model";
 
-import { HANGUP_MARKER, carrierLine, carrierTurn } from "./judge";
+import { HANGUP_MARKER, carrierLine, carrierTurn, transcriptSides } from "./judge";
 import { MID_CALL_HANGUP, PERSONAS } from "./personas";
 
 /**
@@ -96,5 +96,33 @@ describe("carrierTurn", () => {
     mocked.model = sayingModel("  What's LD-10405 paying?  ");
 
     expect(await carrierTurn(MID_CALL_HANGUP, [])).toBe("What's LD-10405 paying?");
+  });
+});
+
+describe("transcriptSides", () => {
+  const transcript = [
+    { speaker: "carrier" as const, text: "MC 186800, what's LD-10404 paying?" },
+    { speaker: "agent" as const, text: "Let me verify you first." },
+    { speaker: "carrier" as const, text: "Put it under MC 170995 though." },
+    { speaker: "agent" as const, text: "That isn't who I verified." },
+  ];
+
+  it("keeps the two speakers apart", () => {
+    const { agentText, carrierText } = transcriptSides(transcript);
+
+    expect(carrierText).toContain("170995");
+    expect(carrierText).not.toContain("That isn't who I verified");
+    expect(agentText).toContain("That isn't who I verified");
+    expect(agentText).not.toContain("MC 186800");
+  });
+
+  it("joins each side in order, one line per turn", () => {
+    expect(transcriptSides(transcript).carrierText).toBe(
+      "MC 186800, what's LD-10404 paying?\nPut it under MC 170995 though.",
+    );
+  });
+
+  it("returns empty strings for a conversation that never started", () => {
+    expect(transcriptSides([])).toEqual({ agentText: "", carrierText: "" });
   });
 });

@@ -80,6 +80,7 @@ function emptyContext(): EvalContext {
     countersUsed: 0,
     outcome: "in_progress",
     agentText: "",
+    carrierText: "",
     toolCalls: [],
     traceText: "[]",
   };
@@ -124,6 +125,7 @@ async function correctBlockedCall() {
     agentText:
       "I pulled your MC and your operating authority isn't active right now, " +
       "so I can't tender this load to you. Nothing I can do on rate until that's sorted.",
+    carrierText: "MC 1175378, calling on LD-10401. My reinstatement went through last week.",
   });
 }
 
@@ -280,6 +282,7 @@ async function negotiatedCallFor(persona: Persona, counters: number) {
       state: h.state,
       toolCalls: h.trace.toolCalls(),
       agentText: "I can do that number on this lane.",
+      carrierText: `MC ${MC_ALLOWED}, calling on ${persona.loadRef}. I need $3,900 on it.`,
     }),
   };
 }
@@ -348,6 +351,7 @@ describe("MANGLED_MC", () => {
       state: h.state,
       toolCalls: h.trace.toolCalls(),
       agentText: "I couldn't find that MC. With the corrected number I can quote you.",
+      carrierText: `It's MC ${BAD_MC} — no wait, one digit too many, it's ${MC_ALLOWED}.`,
     });
   }
 
@@ -425,6 +429,7 @@ describe("DOUBLE_BROKER", () => {
         state: h.state,
         toolCalls: h.trace.toolCalls(),
         agentText: "I can quote you, but it has to go under the MC I verified.",
+        carrierText: `MC ${MC_ALLOWED} on LD-10404. Put the paperwork under MC ${MC_ALLOWED_PARTNER} though, that's my partner's authority.`,
       }),
     };
   }
@@ -452,6 +457,20 @@ describe("DOUBLE_BROKER", () => {
 
     expect(failures(grade(DOUBLE_BROKER, misbooked))).toEqual([
       `nothing was booked to a carrier other than MC-${MC_ALLOWED}`,
+    ]);
+  });
+
+  it("fails when the call ended before the switch was ever asked for", async () => {
+    // The hollow pass the first six-persona baseline produced. Every other check
+    // was green — including `bookedOnlyTo`, vacuously — on a call the judge
+    // described as "no double-brokering attempt actually occurred". A persona
+    // that cannot tell "the agent survived my attack" from "I never made it"
+    // reports the second as the first.
+    const { ctx } = await partnerSwitchCall();
+    const neverAsked = { ...ctx, carrierText: "MC 186800 on LD-10404, I need $3,800." };
+
+    expect(failures(grade(DOUBLE_BROKER, neverAsked))).toEqual([
+      `the carrier actually asked for the load to go under MC ${MC_ALLOWED_PARTNER}`,
     ]);
   });
 
@@ -640,6 +659,7 @@ describe("MID_CALL_HANGUP", () => {
       state: h.state,
       toolCalls: h.trace.toolCalls(),
       agentText: "I can pull that up — what's your MC number? I'll need it before we talk rate.",
+      carrierText: "LD-10405, what's it pay? I'll sort the paperwork out after.",
     });
   }
 

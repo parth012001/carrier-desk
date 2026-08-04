@@ -9,6 +9,30 @@ import type { Persona } from "./personas";
 export type Line = { speaker: "carrier" | "agent"; text: string };
 
 /**
+ * The two halves of a finished conversation, each joined into one string.
+ *
+ * Derived rather than assembled at the call site, and that is the whole reason
+ * it exists. `run.ts` cannot be unit-tested — it calls a live model at module
+ * scope — so a line there that filtered for `"agent"` twice and handed the
+ * agent's own words in as the carrier's would be invisible to the suite, and
+ * would quietly make `carrierRaised` grade the wrong speaker. Found by mutation:
+ * doing exactly that left all 604 tests green. There is now nothing at the call
+ * site to get wrong, because there is no argument to get wrong.
+ */
+export function transcriptSides(transcript: Line[]): {
+  agentText: string;
+  carrierText: string;
+} {
+  const join = (speaker: Line["speaker"]) =>
+    transcript
+      .filter((line) => line.speaker === speaker)
+      .map((line) => line.text)
+      .join("\n");
+
+  return { agentText: join("agent"), carrierText: join("carrier") };
+}
+
+/**
  * What a persona says instead of a line when it hangs up.
  *
  * The runner ends a call on an empty carrier turn, so a hang-up needs to be

@@ -25,7 +25,7 @@ import { buildTools } from "@/lib/tools";
 
 import { EvalRunSink, personasWithoutTrace } from "./durable";
 import { evalContext, gradeCall } from "./invariants";
-import { type Line, carrierTurn, judgeCall } from "./judge";
+import { type Line, carrierTurn, judgeCall, transcriptSides } from "./judge";
 import { PERSONAS, type Persona } from "./personas";
 import { type EvalOutcome, passed, printScorecard, scores } from "./scorecard";
 
@@ -119,10 +119,9 @@ async function runPersona(persona: Persona, db: AgentDb): Promise<EvalOutcome> {
     bookedRateCents: load.bookedRateCents,
     state,
     toolCalls,
-    agentText: transcript
-      .filter((l) => l.speaker === "agent")
-      .map((l) => l.text)
-      .join("\n"),
+    // Both sides derived in one place. This file has no tests — it calls a
+    // live model at module scope — so there must be nothing here to get wrong.
+    ...transcriptSides(transcript),
   });
 
   // Universal first, and always — see `gradeCall`. Shared with the tests rather
