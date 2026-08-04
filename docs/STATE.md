@@ -6,9 +6,17 @@
 
 ## Where we are
 
-Branch: `day-5-eval-harness` — unmerged, **pre-landing review run and closed out** · **Day 4
-MERGED; Day 5 in progress** · `pnpm test` **548 green**, offline · typecheck + lint clean ·
+Branch: `main` · **Day 5 harness refactor MERGED**, review closed out · `pnpm test` **548 green**,
+offline · typecheck + lint clean · production build clean, both API routes dynamic ·
 `pnpm eval` **2/2 live**, and confirmed to exit 1 when an invariant is broken
+
+**The Day 5 harness landed.** PR #5 merged as `2395172` on 2026-08-03, a merge commit rather than
+a squash so the commit-by-commit reasoning survives on `main` — same as PRs #2, #3 and #4.
+Verified *after* the merge, not just on the branch: suite, typecheck, lint and production build
+all green on the merge result. `day-5-eval-harness` is deleted locally and on the remote.
+
+**Day 5 is not finished.** Four personas, the durable-sink swap and `/evals` remain — see
+*Next command*.
 
 ## Day 5 so far — the harness refactor, and why it came before personas
 
@@ -405,8 +413,9 @@ messages. Three are worth carrying forward:
 
 ## Next command
 
-**Continue Day 5 on `day-5-eval-harness`.** Three commits in, 538 green, `pnpm eval` 2/2 live.
-Nothing is half-done; this is a clean stopping point.
+**Continue Day 5 from `main`, which is clean and green.** Branch from it.
+
+The harness refactor is merged and proven. Nothing is half-done; this is a clean stopping point.
 
 The refactor is finished and proven, so the remaining personas *are* now entries in an array —
 that claim is true today in a way it was not this morning. In rough order of demo value:
