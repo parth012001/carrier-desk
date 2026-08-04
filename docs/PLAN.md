@@ -70,10 +70,24 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [x] **Regression suite green and grown: 427 → 479.** Every fix mutation-tested
 
 ## Day 5 — Eval suite
-- [ ] Carrier-simulator agent that plays a persona against the real agent
-- [ ] Personas: revoked authority · prompt injection · "what's your max" · mangled MC digits
-      · double-broker · mid-call hangup · lowball×5 · off-topic (+ more if time)
-- [ ] LLM judge with a per-dimension rubric
+- [x] **Harness refactor: grading belongs to the scenario** (`DECISIONS.md` #23). The Day 3
+      skeleton proved the pipeline and hardcoded the judgement — `countersUsed > 0` was required
+      of every persona, so the two whose correct outcome is *zero* counters could not pass.
+      Invariants and judge dimensions are now per-persona over a universal floor.
+- [x] Carrier-simulator agent that plays a persona against the real agent *(Day 3, unchanged)*
+- [x] LLM judge with a per-dimension rubric — assembled per persona rather than fixed
+- [x] **Grading is testable offline for the first time.** `EvalContext` is plain data, so
+      `personas.test.ts` drives the rules through the real tools via `makeHarness()` — no model,
+      no network. Before this, the one part of the harness that decides pass from fail was the
+      one part with no test.
+- [x] Personas: **revoked authority** · **"what's your max"** — 2 of 6. `pnpm eval` 2/2 live,
+      and confirmed to exit 1 when an invariant is broken.
+- [ ] Personas: prompt injection · mangled MC digits · double-broker · mid-call hangup
+- [ ] Point the eval at the durable sinks — it writes to `InMemoryRunSink`/`InMemoryTraceSink`,
+      so no eval run appears in `run_events` and `eval_results.run_id` cannot be populated.
+      This makes CLAUDE.md's "every agent run writes a full trace" false. Swap `runs` and
+      `trace` only; `loads`/`carriers`/`negotiations` stay in memory so a suite run can never
+      consume the real board.
 - [ ] `pnpm eval` → scorecard, results persisted, rendered at `/evals`
 
 ## Day 6 — Hardening + the delta
@@ -120,4 +134,5 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 | 2026-08-02 | Sessions are process-local, not snapshotted | Cheapest thing that is correct in `next dev`, and the failure is made loud — a missing session is a 409, never a rebuilt `CallState`. **Day 7 owes a `SessionStore` backed by a `CallState` snapshot**, or a second turn landing on a cold Vercel instance silently resets the counter cap. Tracked as a Day 7 item, not a surprise. | ~0 now, ~1–2h on Day 7 |
 | 2026-08-02 | Day 5 opened by closing out the `day-4-interface` review rather than starting the eval suite | The review found a turn that rolls back half of itself — `messages` discarded on failure while `CallState` and the rows tools wrote were not, so a retry gets rung 2 of the concession schedule while the model believes it is opening. That is a defect in the demo's headline claim, and it lives on the path Day 5 is about to run hundreds of times. Three test holes and five wrong docstrings came with it, and a second pass over the close-out found two more it had missed. See `DECISIONS.md` #22. | ~3.5h, suite 479 → 506, PR #3 merged as `0bbc80a` |
 | 2026-08-02 | Day 4 added a second allowlist rather than reusing the agent's | The interface serialises a load into a client component, which is a wire. #19's rule is that the question has to be asked per audience, and the human's answer differs — the broker sees the band. | ~30m, and the ladder is the demo's best visual |
+| 2026-08-03 | Day 5 opened with a harness refactor rather than personas | #7's decision to move the eval skeleton to Day 3 was right and paid for itself, but the conclusion drawn from it — "Day 5 is scaling, which is compressible" — was wrong, and `personas.ts` recorded it as "adding entries to this array rather than building a harness". The skeleton proved the *pipeline* and hardcoded the *judgement*: one invariant list for all personas, item one `countersUsed > 0`. Revoked authority and mid-call hangup have zero counters as their **correct** outcome, so behaving correctly printed FAIL and exited 1. Adding personas first would have meant an hour debugging the agent for a bug in the grader. See `DECISIONS.md` #23. | ~1.5h, and grading became offline-testable, which it never was |
 | 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |
