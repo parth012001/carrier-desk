@@ -95,12 +95,18 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [ ] ~~rendered at `/evals`~~ — **killed**, per kill order item 1. Degrades to pasting the
       scorecard into `INTERVIEW.md`. The delta is the artefact; the page is polish.
 
-## Day 6 — Hardening + the delta
+## Day 6 — Hardening + the delta ✅
 - [x] Run the suite, record the baseline score — **4/6 on 2026-08-04**, done on Day 5 so the
       handoff is a number rather than a promise
-- [ ] Fix every real failure it surfaces
-- [ ] Re-run, record the new score
-- [ ] **Write the before/after story into `INTERVIEW.md` while it is fresh**
+- [x] **Take a second before-run first** — `baseline-2`, unmodified prompt, same suite build.
+      **6/6.** Both red rows passed with no code change. See `DECISIONS.md` #28; this is the
+      finding of the day and it is unrecoverable if not taken before the first edit
+- [x] Fix every real failure it surfaces — two additive prompt rules, three mutations, code
+      checks untouched (`DECISIONS.md` #27)
+- [x] Re-run, record the new score — `post-hardening` ×2, **6/6 and 6/6**, both pinned by
+      `suite_run_id` in `STATE.md`
+- [x] **Write the before/after story into `INTERVIEW.md` while it is fresh** — leads with the
+      defects and with the fact that four runs cannot size the fix
 
 ## Day 7 — Ship
 
@@ -182,3 +188,6 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 | 2026-08-04 | Day 6's baseline was recorded on Day 5 | It is the last step of building the suite, not the first step of reading it, and recording it here means Day 6 opens with a number and two named failures rather than a run to set up. Both failures are agent behaviour, both are Day 6's, and **neither was fixed on purpose** — a 6/6 baseline would leave the before/after delta with no before. | None — moves 20m earlier |
 | 2026-08-04 | The eval writes `runs` and `run_events` for real | It ran entirely on in-memory ports, which made a `CLAUDE.md` hard rule false — "every agent run writes a full trace" — about the runs most worth reading back, and left `eval_results.run_id` unpopulable (deferred #11). `loads`, `carriers` and `negotiations` deliberately stay in memory: a durable load store would let a suite run cover real freight *and* make every result depend on which loads a previous demo had booked. See `DECISIONS.md` #24. | ~45m, suite 548 → 555, closes half of deferred #11 |
 | 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |
+| 2026-08-04 | Day 6 took a **second before-run** before editing anything | The plan said "run each label twice" and treated it as a hygiene note. It was the finding: `baseline-2` came back **6/6 on the unmodified prompt**, so the 4/6 baseline is one draw from a distribution rather than the state of the system. Without it Day 6 would have shipped "4/6 → 6/6" for two prompt sentences and been indefensibly wrong. It has to be taken *before* the first file is edited — four minutes then, unrecoverable after. See `DECISIONS.md` #28. | ~4m, and it is the difference between a measurement and a story |
+| 2026-08-04 | Day 6's delta ships as an honest negative rather than a headline | Kill order item 2, executed for the right reason instead of a slipped schedule. Each defect was observed in one run of four, so two after-runs at 0-of-2 is exactly what a fix that did nothing would produce. `INTERVIEW.md` says so and names the experiment that would settle it (the two defect personas ×10 per side, ~35s each against ~250s for a full suite). | None — the artefact is stronger for it |
+| 2026-08-04 | `counter_offer` keeps no caller-identity check, deliberately, for one more day | It gates on per-MC compliance and `hasClearedCarrier()`, never `isVerifiedCaller`, which is why the agent could quote MC 170995 a real number before `book_load` refused the tender. Closing it is ~10 lines plus tests and it is correct — but shipping an unscoped change to the identity rules on the day those rules are being measured destroys the measurement. Logged as open in `STATE.md` and first on `INTERVIEW.md`'s list. | ~30m deferred, and the gap is written down rather than latent |

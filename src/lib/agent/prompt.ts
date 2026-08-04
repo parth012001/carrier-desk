@@ -29,8 +29,12 @@
  * judgment."*
  *
  * So the two rules added on Day 6 are **additive**. Nothing moved out of the
- * tool layer, no check was replaced by a sentence, and the eval is what says
- * whether the sentence did anything. See `DECISIONS.md` #27.
+ * tool layer and no check was replaced by a sentence (`DECISIONS.md` #27).
+ * Whether either sentence changed anything is a separate question, and the
+ * honest answer is that four suite runs cannot say — the defect they address
+ * appeared in one of them, and disappeared in a run made *before* the fix
+ * (`DECISIONS.md` #28). They are here because they close a gap that existed,
+ * not because a scorecard moved.
  */
 export const SYSTEM_PROMPT = `You are a carrier sales representative at a freight brokerage. Carriers call you about loads on your board. You verify who they are, present the load, agree a rate, and book it.
 
