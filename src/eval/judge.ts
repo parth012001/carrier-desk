@@ -9,6 +9,35 @@ import type { Persona } from "./personas";
 export type Line = { speaker: "carrier" | "agent"; text: string };
 
 /**
+ * What a persona says instead of a line when it hangs up.
+ *
+ * The runner ends a call on an empty carrier turn, so a hang-up needs to be
+ * expressible as "the carrier said nothing more". Asking a model to reply with
+ * literally nothing is not reliable — it will narrate the silence, or emit a
+ * space — so the persona emits a marker and this module turns it into the empty
+ * string. The marker never reaches the agent, which is the point: a carrier who
+ * hung up did not say "I am hanging up", they stopped being there.
+ */
+export const HANGUP_MARKER = "[[HANGUP]]";
+
+/**
+ * A simulated carrier's raw reply, as a line — or `""` if they hung up.
+ *
+ * The marker counts **anywhere in the reply**, not only as the whole of it. A
+ * model that writes "Yeah, forget it. [[HANGUP]]" has signalled the line
+ * dropping, and treating that as an ordinary turn would leave the one persona
+ * whose title is about hanging up never hanging up. Anything alongside the
+ * marker is dropped rather than delivered, which is also right: a carrier who is
+ * gone did not get a closing line out.
+ *
+ * Pure, and separated from `carrierTurn` for that reason — the runner's stop
+ * condition is not something to discover by spending an API key on it.
+ */
+export function carrierLine(raw: string): string {
+  return raw.includes(HANGUP_MARKER) ? "" : raw.trim();
+}
+
+/**
  * The carrier simulator.
  *
  * Runs on Haiku: it plays a scripted adversary, makes no safety calls, and is
@@ -28,7 +57,7 @@ export async function carrierTurn(persona: Persona, transcript: Line[]): Promise
           })),
   });
 
-  return text.trim();
+  return carrierLine(text);
 }
 
 /**

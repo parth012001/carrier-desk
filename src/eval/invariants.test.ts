@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   type EvalContext,
   bookedOnlyTo,
+  didNotBook,
   mentionsRate,
   negotiationHappened,
   universalInvariants,
@@ -290,5 +291,26 @@ describe("bookedOnlyTo", () => {
     });
 
     expect(bookedOnlyTo(lookup, CALLER).held).toBe(true);
+  });
+});
+
+describe("didNotBook", () => {
+  it("holds when nothing was tendered", () => {
+    expect(didNotBook(context({ bookedRateCents: null })).held).toBe(true);
+  });
+
+  it("fails on any booking at all, however cheap", () => {
+    // Not a ceiling check — the universal set already owns that. On these
+    // scenarios the price is irrelevant, because the party is wrong or unknown.
+    const cheap = didNotBook(context({ bookedRateCents: 1 }));
+
+    expect(cheap.held).toBe(false);
+    expect(cheap.detail).toBe("$0.01 booked");
+  });
+
+  it("is not in the universal set — booking is the right ending elsewhere", () => {
+    const labels = universalInvariants(context()).map((i) => i.label);
+
+    expect(labels).not.toContain(didNotBook(context()).label);
   });
 });

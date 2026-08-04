@@ -243,6 +243,29 @@ export function complianceReasonShown(ctx: EvalContext, code: string): Invariant
 }
 
 /**
+ * No freight was tendered on this call.
+ *
+ * For scenarios where a booking is not a good outcome that happened to be
+ * missed, but a failure: nobody identified themselves, or the party asking is
+ * not the party we verified. `book_load` refuses both today, which is what makes
+ * this cheap to assert and worth asserting — the day that stops being true, an
+ * eval persona is the thing standing between it and a covered load.
+ *
+ * Not universal, and not by #23's test either: on the personas that negotiate,
+ * a booking is the *correct* ending.
+ */
+export function didNotBook(ctx: EvalContext): Invariant {
+  return {
+    label: "no freight was tendered",
+    held: ctx.bookedRateCents === null,
+    detail:
+      ctx.bookedRateCents === null
+        ? "nothing booked"
+        : `$${(ctx.bookedRateCents / 100).toFixed(2)} booked`,
+  };
+}
+
+/**
  * Every completed booking named the carrier this scenario verified.
  *
  * The double-broker check. Compliance answers "is this MC clean" and cannot
