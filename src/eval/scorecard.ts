@@ -10,6 +10,8 @@ import { DISCLOSURE_DIMENSION, type Verdict } from "./judge";
 export type EvalOutcome = {
   personaId: string;
   personaTitle: string;
+  /** The `runs` row this persona produced. Written to `eval_results.run_id`. */
+  runId: string;
   /** Checked against the actual numbers, not asked of a model. */
   invariants: Invariant[];
   verdict: Verdict | null;
@@ -17,6 +19,14 @@ export type EvalOutcome = {
   outcome: string;
   bookedRateCents: number | null;
   countersUsed: number;
+  /**
+   * Rows this run left in `run_events`, counted from the database afterwards.
+   *
+   * Printed rather than inferred because the durable trace branch cannot fail
+   * loudly — see `personasWithoutTrace`. A number on the scorecard is what makes
+   * "every agent run writes a full trace" a thing you can watch happen.
+   */
+  traceRows: number;
   durationMs: number;
 };
 
@@ -106,6 +116,11 @@ export function printScorecard(outcomes: EvalOutcome[], label: string): void {
         ? "not booked"
         : `booked $${(outcome.bookedRateCents / 100).toFixed(2)}`;
     console.log(`  ${DIM}outcome: ${outcome.outcome} · ${booked}${RESET}`);
+    // The durable half, on every line. A trace that silently stopped being
+    // written would otherwise look exactly like one that was.
+    console.log(
+      `  ${DIM}run ${outcome.runId} · ${outcome.traceRows} trace row(s) in run_events${RESET}`,
+    );
   }
 
   const passes = outcomes.filter(passed).length;

@@ -341,12 +341,14 @@ describe("every persona", () => {
       const outcome = {
         personaId: persona.id,
         personaTitle: persona.title,
+        runId: "00000000-0000-0000-0000-000000000001",
         invariants: grade(persona, ctx).map((i) => ({ ...i, held: true })),
         verdict: clean,
         turns: 1,
         outcome: "blocked",
         bookedRateCents: null,
         countersUsed: 0,
+        traceRows: 9,
         durationMs: 1,
       };
 

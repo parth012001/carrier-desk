@@ -719,3 +719,71 @@ extraction", which is vacuous, and `passed()` gating on it — the same bug one 
 single `met_pass_condition` boolean judged against the persona's prose (one fuzzy verdict where
 several crisp ones are available, and it hides which dimension failed on a scorecard whose whole
 job is to say what broke).
+
+---
+
+### 24 — An eval run is an agent run: `runs` and `trace` are durable, everything else is not
+
+**2026-08-04** — Day 5
+
+`pnpm eval` built `InMemoryRunSink` and `InMemoryTraceSink`, so no eval run ever reached `runs` or
+`run_events`. That was defensible on Day 3, when the eval was a walking skeleton with one persona.
+It is not defensible on a day that runs six adversarial conversations, because it makes a
+`CLAUDE.md` hard rule false — *"every agent run writes a full trace to `run_events`"* — about
+precisely the runs most worth reading back. It also made `eval_results.run_id` unpopulable, which
+is half of deferred critical #11: a scorecard row named a persona and a verdict with no way to open
+the call behind it.
+
+**Two ports move and four do not, and the split is not fastidiousness.** `loads`, `carriers` and
+`negotiations` stay in memory:
+
+- A real `DrizzleLoadStore` would let a suite run **cover real freight**. Worse for the eval
+  itself, it would make every result depend on database state — a persona whose load a previous
+  live demo had already booked gets `load_unavailable` and fails for a reason that has nothing to
+  do with the agent.
+- A real `DrizzleCarrierStore` would invent carrier rows and inflate `carriers.total_calls`, which
+  is the counter demo contract item 4 reads. Six eval runs would make call #1 of the live demo
+  report as call #7.
+
+**The two foreign keys are dropped on the way out.** `runs.carrier_id` and `runs.load_id` are
+`uuid` columns referencing tables the eval does not write, and the in-memory stores hand out
+`carrier-0000` / `load-0003`. Forwarding those is not a nullable-column trade-off — Postgres
+rejects the literal as invalid uuid syntax before the constraint is ever consulted, and the throw
+surfaces *inside `end_call`*, which is a traced tool, so the model would be told the call could not
+be ended. `EvalRunSink` nulls both. Outcome, final rate, persona and `is_eval` all survive, and the
+load and carrier are still in the trace and the transcript blob.
+
+`EvalRunSink` also **forces `isEval`** rather than forwarding it. `runs_is_eval_idx` is the index
+an ops view reads, and hundreds of adversarial runs landing in it are fake bookings inside numbers
+a demo quotes. A sink whose entire purpose is eval traffic is the one place that can guarantee the
+flag; passing it from the call site made it a value someone could forget.
+
+**The trace is tee'd, not swapped, and the row count is asserted.** The grader reads an in-memory
+branch beside the durable one — re-reading a call out of Postgres to score one still in memory adds
+a round trip and a failure mode for nothing. The consequence needed handling: `TeeTraceSink` routes
+every branch through `writeTrace`, which swallows and logs a failure so a dead sink can never fail
+the work it describes (#1, Day 4). That is right, and it means an unreachable Postgres would leave
+every persona grading, printing and **passing** while `run_events` stayed empty — the rule this
+change exists to make true, quietly false again, under a green scorecard. So `runPersona` counts
+the rows back out of the database, the scorecard prints the number per persona, and a zero exits 1
+through a path separate from `passed()`. It is not the agent failing; it is the harness failing to
+record what the agent did, and the two should not share a verdict.
+
+**`DATABASE_URL` is required now**, not an optional persistence upgrade. A mode that silently skips
+the trace is the mode being deleted.
+
+**What it cost:** ~45m, suite 548 → 555. Confirmed live, not just in tests: `eval_results.run_id`
+non-null, `runs.is_eval` true, 22 and 6 rows in `run_events` for the two personas — against null
+and zero on the rows from the run immediately before.
+
+**A thing it made visible rather than caused.** Ceiling extraction ended `in_progress` with a null
+`ended_at`, in Postgres, where before it ended nowhere. That is deferred critical **#5** — no
+`finally`, so a call the carrier hangs up on never reaches `runs.finish`. It is scheduled for Day 7
+and is unchanged by this; it is simply legible now, which is an argument for the change rather than
+against it.
+
+**Rejected:** everything durable (a suite run that consumes the load board and pollutes the carrier
+counters) · everything in memory with a note in `CLAUDE.md` softening the rule (the rule is right;
+the eval was wrong) · reading the trace back out of Postgres for grading (a network round trip
+between a run and its own verdict) · forwarding the synthetic ids and letting Postgres decide (it
+decides by throwing inside a tool).
