@@ -576,22 +576,70 @@ describe("two carriers on one call", () => {
     expect(h.loads.snapshot(REF)?.coveredByCarrierId).not.toBe(blocked?.id);
   });
 
-  it("refuses to book an MC that is clean but is not the caller we verified", async () => {
-    // Compliance answers "is this MC clean". It does not answer "is this MC the
-    // party we are on the phone with", and the carrier row book_load writes is
-    // the answer to the second question. Both MCs here clear the gate, so the
-    // block check cannot cover for the identity check.
+  it.each([
+    ["the caller is looked up first", MC_ALLOWED, MC_ALLOWED_OTHER],
+    ["the caller is looked up second", MC_ALLOWED_OTHER, MC_ALLOWED],
+  ])(
+    "refuses to book an MC that is clean but is not the caller we verified, when %s",
+    async (_label, caller, other) => {
+      // Compliance answers "is this MC clean". It does not answer "is this MC
+      // the party we are on the phone with", and the carrier row book_load
+      // writes is the answer to the second question. Both MCs here clear the
+      // gate, so the block check cannot cover for the identity check.
+      //
+      // Both orderings, because only one of them used to work. The slot went to
+      // the *last* clean lookup, so a caller who verified themselves and then
+      // had a second clean MC looked up handed it away — see the
+      // double-broker case below and `CallState.rememberCarrier`.
+      const h = makeHarness({ source: twoCleanCarriersSource() });
+
+      await callTool(h.tools, "lookup_carrier", { mc_number: caller });
+      await callTool(h.tools, "lookup_carrier", { mc_number: other });
+
+      expect(h.state.complianceFor(caller)?.decision).toBe("allow");
+      expect(h.state.complianceFor(other)?.decision).toBe("allow");
+
+      const offer = (await callTool(h.tools, "counter_offer", {
+        load_ref: REF,
+        mc_number: caller,
+      })) as { rate_cents: number };
+
+      const result = (await callTool(h.tools, "book_load", {
+        load_ref: REF,
+        mc_number: other,
+        rate_cents: offer.rate_cents,
+      })) as { booked: boolean; reason: string };
+
+      expect(result).toMatchObject({ booked: false, reason: "carrier_not_verified" });
+      expect(h.loads.snapshot(REF)?.status).toBe("available");
+    },
+  );
+
+  it("does not hand the load to a partner MC produced after the rate was agreed", async () => {
+    // The double-broker attack, end to end, in the order a carrier would run
+    // it: verify yourself, agree a number, then ask for the paperwork to go
+    // under someone else's authority — naming a real, clean, active docket, so
+    // the compliance gate says `allow` and cannot help.
+    //
+    // This booked before the fix. `rememberCarrier` assigned the caller of
+    // record on every non-blocked lookup, so the partner took the slot,
+    // `isVerifiedCaller` agreed, and the freight was tendered to a carrier that
+    // had never been on the call — with `covered_by_carrier_id` naming them in
+    // Postgres. Found by the Day 5 double-broker persona.
     const h = makeHarness({ source: twoCleanCarriersSource() });
 
-    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED_OTHER });
     await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
-
-    expect(h.state.complianceFor(MC_ALLOWED_OTHER)?.decision).toBe("allow");
-
     const offer = (await callTool(h.tools, "counter_offer", {
       load_ref: REF,
       mc_number: MC_ALLOWED,
     })) as { rate_cents: number };
+
+    // "Can you run it under my partner's authority?" — a legitimate lookup, and
+    // it must stay one: the model is allowed to answer the question.
+    const partner = (await callTool(h.tools, "lookup_carrier", {
+      mc_number: MC_ALLOWED_OTHER,
+    })) as { found: boolean; decision: string };
+    expect(partner).toMatchObject({ found: true, decision: "allow" });
 
     const result = (await callTool(h.tools, "book_load", {
       load_ref: REF,
@@ -601,6 +649,32 @@ describe("two carriers on one call", () => {
 
     expect(result).toMatchObject({ booked: false, reason: "carrier_not_verified" });
     expect(h.loads.snapshot(REF)?.status).toBe("available");
+    // And the caller we were actually talking to is still the caller.
+    expect(h.state.verifiedMcNumber).toBe(MC_ALLOWED);
+    expect(h.state.carrier?.mcNumber).toBe(MC_ALLOWED);
+  });
+
+  it("still lets the carrier who cleared the gate book after the partner lookup", async () => {
+    // The other half, so the fix is a refusal to *misattribute* rather than a
+    // refusal to book. A locked slot that also stopped the real caller booking
+    // would break demo contract item 1 and look identical on the scorecard.
+    const h = makeHarness({ source: twoCleanCarriersSource() });
+
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED });
+    const offer = (await callTool(h.tools, "counter_offer", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+    })) as { rate_cents: number };
+    await callTool(h.tools, "lookup_carrier", { mc_number: MC_ALLOWED_OTHER });
+
+    const result = (await callTool(h.tools, "book_load", {
+      load_ref: REF,
+      mc_number: MC_ALLOWED,
+      rate_cents: offer.rate_cents,
+    })) as { booked: boolean; carrier_mc: string };
+
+    expect(result).toMatchObject({ booked: true, carrier_mc: MC_ALLOWED });
+    expect(h.loads.snapshot(REF)?.coveredByCarrierId).toBe(h.carriers.snapshot(MC_ALLOWED)?.id);
   });
 
   it("does not treat a lookup that failed to persist as a verified caller", async () => {

@@ -41,12 +41,14 @@ function outcome(over: Partial<EvalOutcome> = {}): EvalOutcome {
   return {
     personaId: "ceiling-extraction",
     personaTitle: "Ceiling extraction",
+    runId: "00000000-0000-0000-0000-000000000001",
     invariants: [{ label: "the negotiation actually happened", held: true }],
     verdict: cleanVerdict,
     turns: 6,
     outcome: "rejected",
     bookedRateCents: null,
     countersUsed: 2,
+    traceRows: 12,
     durationMs: 1000,
     ...over,
   };

@@ -71,3 +71,94 @@ describe("CallState — the counter count", () => {
     expect(state.isBooked("LD-10401")).toBe(false);
   });
 });
+
+describe("CallState — the caller of record", () => {
+  /** Enough of a CarrierRecord and a StoredCarrier for the slot logic. */
+  function carrier(mcNumber: string) {
+    return {
+      record: { mcNumber } as unknown as Parameters<CallState["rememberCarrier"]>[1],
+      stored: { id: `carrier-${mcNumber}`, mcNumber } as unknown as Parameters<
+        CallState["rememberCarrier"]
+      >[2],
+    };
+  }
+
+  function remember(state: CallState, mcNumber: string) {
+    const { record, stored } = carrier(mcNumber);
+    state.rememberCarrier(mcNumber, record, stored);
+  }
+
+  it("is claimed by the first carrier that clears the gate", () => {
+    const state = new CallState("run-1");
+    state.rememberCompliance("186800", { decision: "allow", reasons: [] });
+
+    remember(state, "186800");
+
+    expect(state.verifiedMcNumber).toBe("186800");
+    expect(state.isVerifiedCaller("186800")).toBe(true);
+    expect(state.hasClearedCarrier()).toBe(true);
+  });
+
+  it("is not taken by a second lookup that the gate blocked", () => {
+    // "Check my partner's number too" — a blocked carrier taking the slot would
+    // have written the blocked entity's id into `covered_by_carrier_id`.
+    const state = new CallState("run-1");
+    state.rememberCompliance("186800", { decision: "allow", reasons: [] });
+    state.rememberCompliance("1175378", { decision: "block", reasons: [] });
+
+    remember(state, "186800");
+    remember(state, "1175378");
+
+    expect(state.verifiedMcNumber).toBe("186800");
+    expect(state.isVerifiedCaller("1175378")).toBe(false);
+  });
+
+  it("is not taken by a second lookup the gate cleared either", () => {
+    // The double-broker attack, and the half the block guard above never
+    // covered: the partner MC is real, active and clean, so compliance answers
+    // `allow` and cannot help. Last-write-wins handed them the slot, and
+    // `book_load` then tendered freight to a carrier who was never on the call.
+    const state = new CallState("run-1");
+    state.rememberCompliance("186800", { decision: "allow", reasons: [] });
+    state.rememberCompliance("170995", { decision: "allow", reasons: [] });
+
+    remember(state, "186800");
+    remember(state, "170995");
+
+    expect(state.verifiedMcNumber).toBe("186800");
+    expect(state.isVerifiedCaller("170995")).toBe(false);
+    expect(state.carrier?.id).toBe("carrier-186800");
+  });
+
+  it("refreshes the same carrier when they are looked up twice", () => {
+    // Not re-pointing is about a *different* MC. Re-reading the same one is an
+    // ordinary thing for the model to do and must keep the stored row current.
+    const state = new CallState("run-1");
+    state.rememberCompliance("186800", { decision: "allow", reasons: [] });
+
+    remember(state, "186800");
+    const refreshed = { id: "carrier-refreshed", mcNumber: "186800" } as unknown as Parameters<
+      CallState["rememberCarrier"]
+    >[2];
+    state.rememberCarrier("186800", carrier("186800").record, refreshed);
+
+    expect(state.carrier?.id).toBe("carrier-refreshed");
+    expect(state.verifiedMcNumber).toBe("186800");
+  });
+
+  it("lets a clean carrier claim the slot after a blocked one failed to", () => {
+    // The mangled-MC shape: the first number the caller gave does not clear, so
+    // it never held the slot, and the corrected one is free to take it.
+    const state = new CallState("run-1");
+    state.rememberCompliance("1868000", { decision: "block", reasons: [] });
+    state.rememberCompliance("186800", { decision: "allow", reasons: [] });
+
+    remember(state, "1868000");
+    expect(state.hasClearedCarrier()).toBe(false);
+
+    remember(state, "186800");
+
+    expect(state.verifiedMcNumber).toBe("186800");
+    expect(state.isVerifiedCaller("186800")).toBe(true);
+  });
+});

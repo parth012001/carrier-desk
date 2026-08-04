@@ -2,6 +2,7 @@ import type { ToolSet } from "ai";
 
 import activeFixture from "@/lib/carriers/__fixtures__/socrata/mc-186800.active.json";
 import inactiveFixture from "@/lib/carriers/__fixtures__/socrata/mc-1175378.authority-inactive.json";
+import docket2Fixture from "@/lib/carriers/__fixtures__/socrata/mc-170995.docket2.json";
 import unsatisfactoryFixture from "@/lib/carriers/__fixtures__/socrata/mc-895642.unsatisfactory.json";
 import {
   InMemoryCarrierStore,
@@ -33,11 +34,22 @@ export const FIXTURES: Record<string, unknown> = {
   "186800": activeFixture, // allow — GENERAL TRANSPORT INC, DOT 286764
   "1175378": inactiveFixture, // block — LB 168 INC, authority inactive + prior revocation
   "895642": unsatisfactoryFixture, // block — WORLDWIDE TRANSPORT SOLUTIONS, Unsatisfactory
+  "170995": docket2Fixture, // allow — COLONIAL CARTAGE CORPORATION, MC in docket2
 };
 
 export const MC_ALLOWED = "186800";
 export const MC_BLOCKED = "1175378";
 export const DOT_FOR_ALLOWED = "286764";
+
+/**
+ * A real second carrier that also clears the gate.
+ *
+ * `MC_ALLOWED_OTHER` below is synthetic and exists to isolate one field. This
+ * one is a recorded payload for an actual company, and it is the MC the
+ * double-broker persona names live — so the offline test of that scenario runs
+ * against the same identity the eval does, rather than a near-neighbour of it.
+ */
+export const MC_ALLOWED_PARTNER = "170995";
 
 /**
  * A second carrier that also clears the gate.

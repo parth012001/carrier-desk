@@ -80,18 +80,24 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
       `personas.test.ts` drives the rules through the real tools via `makeHarness()` — no model,
       no network. Before this, the one part of the harness that decides pass from fail was the
       one part with no test.
-- [x] Personas: **revoked authority** · **"what's your max"** — 2 of 6. `pnpm eval` 2/2 live,
-      and confirmed to exit 1 when an invariant is broken.
-- [ ] Personas: prompt injection · mangled MC digits · double-broker · mid-call hangup
-- [ ] Point the eval at the durable sinks — it writes to `InMemoryRunSink`/`InMemoryTraceSink`,
-      so no eval run appears in `run_events` and `eval_results.run_id` cannot be populated.
-      This makes CLAUDE.md's "every agent run writes a full trace" false. Swap `runs` and
-      `trace` only; `loads`/`carriers`/`negotiations` stay in memory so a suite run can never
-      consume the real board.
-- [ ] `pnpm eval` → scorecard, results persisted, rendered at `/evals`
+- [x] Personas: **all 6.** revoked authority · "what's your max" · prompt injection · mangled MC
+      digits · double-broker · mid-call hangup. `pnpm eval` runs all six live, and is confirmed to
+      exit 1 against a deliberately broken invariant.
+- [x] **The baseline is recorded: 4/6, label `baseline`, persisted with `run_id`.** Two red rows,
+      both real agent-behaviour defects, both Day 6's. See `STATE.md`.
+- [x] **Point the eval at the durable sinks.** `runs` and `trace` only; `loads`, `carriers` and
+      `negotiations` stay in memory so a suite run can never consume the real board or inflate the
+      carrier counters. `EvalRunSink` nulls the two foreign keys that name no row and forces
+      `is_eval`; the trace is tee'd so the grader still reads it in memory, and the durable row
+      count is read back and printed per persona. Closes the `eval_results.run_id` half of
+      deferred critical **#11**. (`DECISIONS.md` #24)
+- [x] `pnpm eval` → scorecard, results persisted with `run_id` and a durable trace
+- [ ] ~~rendered at `/evals`~~ — **killed**, per kill order item 1. Degrades to pasting the
+      scorecard into `INTERVIEW.md`. The delta is the artefact; the page is polish.
 
 ## Day 6 — Hardening + the delta
-- [ ] Run the suite, record the baseline score
+- [x] Run the suite, record the baseline score — **4/6 on 2026-08-04**, done on Day 5 so the
+      handoff is a number rather than a promise
 - [ ] Fix every real failure it surfaces
 - [ ] Re-run, record the new score
 - [ ] **Write the before/after story into `INTERVIEW.md` while it is fresh**
@@ -171,4 +177,8 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 | 2026-08-03 | Kill order rewritten | Every entry was spent. Voice was never started, the trace UI is built and twice-reviewed so cutting it recovers nothing, and personas were already at the floor of 6. The original was written against "voice and UI eat the week"; what actually ate it was review depth, which the list had no entry for. The new one leads with `/evals` and with shipping the Day 6 delta as it stands, because Day 6 is the only line item that is unbounded by construction. | None — a kill order with no executable move was already costing nothing |
 | 2026-08-03 | Day 7 gained two explicit build steps: `SessionStore` and the memory beat | Both were owed and neither was written as work. `SessionStore` lived in an amendment row; the memory beat lived behind "call #2 recalls call #1", a verification checkbox that assumed a build step nobody had scheduled. Demo contract item 4 currently rests on `previous_calls`, which deferred critical #8 makes a count of lookups rather than calls — so the beat is one integer, and a wrong one. Unowned work on the last day is how a demo contract item quietly does not ship. | ~2–3h, moved from invisible to scheduled |
 | 2026-08-03 | Day 5 opened with a harness refactor rather than personas | #7's decision to move the eval skeleton to Day 3 was right and paid for itself, but the conclusion drawn from it — "Day 5 is scaling, which is compressible" — was wrong, and `personas.ts` recorded it as "adding entries to this array rather than building a harness". The skeleton proved the *pipeline* and hardcoded the *judgement*: one invariant list for all personas, item one `countersUsed > 0`. Revoked authority and mid-call hangup have zero counters as their **correct** outcome, so behaving correctly printed FAIL and exited 1. Adding personas first would have meant an hour debugging the agent for a bug in the grader. See `DECISIONS.md` #23. | ~1.5h, and grading became offline-testable, which it never was |
+| 2026-08-04 | Day 5 took a defect fix and a harness fix it had not scheduled | Writing down the double-broker persona's correct outcome exposed that the code did not produce it: `rememberCarrier` re-pointed the caller of record on any clean lookup, so a partner MC could take the slot mid-call and `book_load` would tender freight to a carrier who never called. Reproduced offline before fixing. Then the first six-persona baseline showed that persona passing on a call where its own attack never happened, which needed `carrierRaised`. Both are `CLAUDE.md`'s "the regression test lands in the same commit as the fix" rather than scope creep — a persona that finds a bug on the day it is written is the eval working. See `DECISIONS.md` #25 and #26. | ~1h, suite 563 → 607 |
+| 2026-08-04 | `/evals` killed, per kill order item 1 | First executable entry on the rewritten kill order, taken deliberately rather than by running out of day. Day 5 spent its slack on two defects instead, which is the better trade: the delta is the artefact and the page is polish. | Recovers ~2h into Day 6 |
+| 2026-08-04 | Day 6's baseline was recorded on Day 5 | It is the last step of building the suite, not the first step of reading it, and recording it here means Day 6 opens with a number and two named failures rather than a run to set up. Both failures are agent behaviour, both are Day 6's, and **neither was fixed on purpose** — a 6/6 baseline would leave the before/after delta with no before. | None — moves 20m earlier |
+| 2026-08-04 | The eval writes `runs` and `run_events` for real | It ran entirely on in-memory ports, which made a `CLAUDE.md` hard rule false — "every agent run writes a full trace" — about the runs most worth reading back, and left `eval_results.run_id` unpopulable (deferred #11). `loads`, `carriers` and `negotiations` deliberately stay in memory: a durable load store would let a suite run cover real freight *and* make every result depend on which loads a previous demo had booked. See `DECISIONS.md` #24. | ~45m, suite 548 → 555, closes half of deferred #11 |
 | 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |
