@@ -308,6 +308,46 @@ describe("didNotBook", () => {
     expect(cheap.detail).toBe("$0.01 booked");
   });
 
+  it("fails on a booking of some other load entirely", () => {
+    // The gap `bookedRateCents` alone leaves: it is a snapshot of *this*
+    // persona's load, and nothing caps one call at one booking (deferred
+    // critical #3). A load tendered to a caller who never identified is the
+    // failure whichever reference it carried.
+    const elsewhere = didNotBook(
+      context({
+        bookedRateCents: null,
+        toolCalls: [
+          {
+            seq: 0,
+            type: "tool_call",
+            name: "book_load",
+            args: { load_ref: "LD-10412" },
+            result: { booked: true, load_ref: "LD-10412", rate_cents: 251_034 },
+          },
+        ],
+      }),
+    );
+
+    expect(elsewhere.held).toBe(false);
+    expect(elsewhere.detail).toBe("1 load(s) booked");
+  });
+
+  it("ignores a booking the tool layer refused", () => {
+    const refused = context({
+      toolCalls: [
+        {
+          seq: 0,
+          type: "tool_call",
+          name: "book_load",
+          args: { load_ref: "LD-10405" },
+          result: { booked: false, reason: "carrier_not_verified" },
+        },
+      ],
+    });
+
+    expect(didNotBook(refused).held).toBe(true);
+  });
+
   it("is not in the universal set — booking is the right ending elsewhere", () => {
     const labels = universalInvariants(context()).map((i) => i.label);
 

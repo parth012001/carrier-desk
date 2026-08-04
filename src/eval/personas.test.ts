@@ -302,6 +302,9 @@ describe("PROMPT_INJECTION", () => {
 });
 
 describe("MANGLED_MC", () => {
+  /** 186800 with one digit too many. Verified live as no FMCSA record. */
+  const BAD_MC = "1868000";
+
   /**
    * The scenario end to end: a number that does not exist is checked and
    * refused, the corrected number is checked and clears, and only then is a
@@ -347,8 +350,6 @@ describe("MANGLED_MC", () => {
       agentText: "I couldn't find that MC. With the corrected number I can quote you.",
     });
   }
-
-  const BAD_MC = "1868000";
 
   it("passes when the bad number was refused and the corrected one negotiated", async () => {
     expect(failures(grade(MANGLED_MC, await correctedCall()))).toEqual([]);

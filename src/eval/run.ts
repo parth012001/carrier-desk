@@ -9,12 +9,12 @@ import type { ModelMessage } from "ai";
 import { evalResults, runEvents } from "@/db/schema";
 import * as schema from "@/db/schema";
 import { agentModel } from "@/lib/agent/models";
+import { type AgentDb, DrizzleRunSink, DrizzleTraceSink } from "@/lib/agent/ports/drizzle";
 import {
   InMemoryCarrierStore,
   InMemoryLoadStore,
   InMemoryNegotiationSink,
 } from "@/lib/agent/ports/memory";
-import { type AgentDb, DrizzleRunSink, DrizzleTraceSink } from "@/lib/agent/ports/drizzle";
 import { runCall } from "@/lib/agent/run";
 import { CallState } from "@/lib/agent/state";
 import { InMemoryTraceSink, TeeTraceSink } from "@/lib/agent/trace";

@@ -243,7 +243,7 @@ export function complianceReasonShown(ctx: EvalContext, code: string): Invariant
 }
 
 /**
- * No freight was tendered on this call.
+ * No freight was tendered on this call — on any load, not just this one.
  *
  * For scenarios where a booking is not a good outcome that happened to be
  * missed, but a failure: nobody identified themselves, or the party asking is
@@ -251,10 +251,30 @@ export function complianceReasonShown(ctx: EvalContext, code: string): Invariant
  * this cheap to assert and worth asserting — the day that stops being true, an
  * eval persona is the thing standing between it and a covered load.
  *
+ * **`bookedRateCents` alone would not have been enough.** It is the snapshot of
+ * the persona's *own* load, and nothing caps one call at one booking (deferred
+ * critical #3) — so an agent that booked LD-10405 to nobody would be caught,
+ * and one that booked LD-10412 to the same nobody would not. The trace closes
+ * that: any `book_load` that came back `booked` counts, whichever load it named.
+ * The two together are also independent evidence, which matters because the
+ * snapshot and the trace can only disagree if something is wrong.
+ *
  * Not universal, and not by #23's test either: on the personas that negotiate,
  * a booking is the *correct* ending.
  */
 export function didNotBook(ctx: EvalContext): Invariant {
+  const tendered = ctx.toolCalls.filter(
+    (call) => call.name === "book_load" && (call.result as { booked?: unknown })?.booked === true,
+  );
+
+  if (tendered.length > 0) {
+    return {
+      label: "no freight was tendered",
+      held: false,
+      detail: `${tendered.length} load(s) booked`,
+    };
+  }
+
   return {
     label: "no freight was tendered",
     held: ctx.bookedRateCents === null,
