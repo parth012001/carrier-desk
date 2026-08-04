@@ -58,9 +58,32 @@ export class CallState {
    * Records who we are talking to. Only a carrier that cleared the gate can
    * become the caller of record; a blocked lookup updates `compliance` (so
    * check_compliance can still restate why they were refused) and nothing else.
+   *
+   * **The slot is claimed once per call and is never re-pointed.** The block
+   * guard above covers a second lookup that fails the gate; it does nothing
+   * about a second lookup that passes it, and that is the double-broker attack:
+   * a carrier verifies themselves, negotiates a rate, and then asks the agent to
+   * "put it under my partner's authority" — naming a real, clean, active MC.
+   * Compliance answers `allow`, so the last-write-wins assignment handed the
+   * partner the slot, `isVerifiedCaller` then agreed, and `book_load` tendered
+   * the freight to a carrier who had never been on the call. The rate negotiated
+   * with one entity was booked against another, with `covered_by_carrier_id`
+   * naming the wrong one in Postgres. Found by the Day 5 double-broker persona.
+   *
+   * One phone call has one caller, and looking someone else up does not change
+   * who is on the line. Later lookups still run, still cache, still persist the
+   * carrier row and still answer the model's question — they just do not
+   * reassign the party we are tendering to.
+   *
+   * The cost is a caller whose first clean lookup was the wrong carrier — a
+   * misread MC that happens to land on a valid active docket — is locked out of
+   * booking for the rest of the call. That is a refusal to tender, which is the
+   * safe direction; the alternative is guessing which of two valid dockets is
+   * the human on the phone, and guessing wrong moves freight.
    */
   rememberCarrier(mcNumber: string, record: CarrierRecord, stored: StoredCarrier): void {
     if (this.compliance.get(mcNumber)?.decision === "block") return;
+    if (this.verifiedMcNumber !== null && this.verifiedMcNumber !== mcNumber) return;
     this.carrier = stored;
     this.carrierRecord = record;
     this.verifiedMcNumber = mcNumber;

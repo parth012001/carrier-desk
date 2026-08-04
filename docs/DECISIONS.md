@@ -787,3 +787,56 @@ counters) · everything in memory with a note in `CLAUDE.md` softening the rule 
 the eval was wrong) · reading the trace back out of Postgres for grading (a network round trip
 between a run and its own verdict) · forwarding the synthetic ids and letting Postgres decide (it
 decides by throwing inside a tool).
+
+---
+
+### 25 — One call has one caller: the slot is claimed once and never re-pointed
+
+**2026-08-04** — Day 5
+
+Found while designing the double-broker persona, before it was ever run: writing down what the
+scenario's correct outcome should be is what exposed that the code did not produce it.
+
+`CallState.rememberCarrier` assigned the caller of record on **every** non-blocked lookup. It
+already refused a lookup the gate had blocked — that fix landed on Day 3, after a caller could get
+a clean MC verified, have a blocked one looked up second, and watch the blocked entity take the
+slot. What it never covered is the second lookup that **passes** the gate, and that is the whole
+double-broker attack:
+
+1. Carrier verifies their own MC. Clean. They become the caller of record.
+2. They negotiate a rate — three counters, all attributed to them, all in `negotiations`.
+3. "Can you put it under my partner's authority? MC 170995, that's who invoices."
+4. The agent looks 170995 up. It is a real, active, clean carrier, so compliance answers `allow`.
+5. **Last write wins.** 170995 becomes the caller of record, `isVerifiedCaller("170995")` agrees,
+   and `book_load` tenders the freight to a carrier who was never on the call — writing their id
+   into `loads.covered_by_carrier_id`.
+
+Reproduced offline through the real tools before writing a line of the fix: `booked: true,
+carrier_mc: "300001"`. The rate agreed with one entity, booked against another. That is the worst
+class of bug this system has alongside booking above the ceiling, and the compliance gate cannot
+see it — both dockets are clean, so `allow` is the correct answer to the only question the gate is
+asked.
+
+**The rule: the caller of record is claimed once per call and is never reassigned to a different
+MC.** Looking someone else up does not change who is on the phone. Later lookups still run, still
+cache, still persist the carrier row, still answer the model's question — they just do not
+reassign the party we are tendering to. Re-reading the *same* MC still refreshes the stored row,
+because that is an ordinary thing for the model to do.
+
+**What it costs, stated rather than discovered later.** A caller whose first clean lookup was the
+wrong carrier — a misread MC that happens to land on a valid active docket — cannot book for the
+rest of the call. `book_load` returns `carrier_not_verified` and the agent says it cannot book
+them. That is a refusal to tender, which is the safe direction. The alternative is guessing which
+of two valid dockets is the human on the phone, and a wrong guess moves freight. The mangled-MC
+persona is unaffected: a number that does not exist is a `block`, so it never held the slot, and
+the corrected number is free to claim it.
+
+**Rejected:** requiring `book_load`'s MC to match the MC the counters were made under (precise, and
+it does stop the mis-tender — but it leaves `state.carrier` re-pointed, so nobody can book at all
+after a partner lookup, and `covered_by_carrier_id` would still be reading from the wrong carrier
+on any path that reached it) · asking the model which MC is the caller (the model is what the
+attacker is talking to) · blocking the partner lookup outright (it is a legitimate question and
+refusing to answer it teaches the carrier nothing).
+
+Three mutations, all red, all reverted — including reverting the fix itself, which turns five tests
+red across `state.test.ts` and `tools.test.ts`.
