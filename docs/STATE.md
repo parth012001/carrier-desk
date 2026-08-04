@@ -466,7 +466,10 @@ Ranked. Each was confirmed by reading the code; several were reproduced against 
    covered, quotes a number out loud, and only discovers it at `book_load`.
 8. **`previous_calls` counts lookups, not calls.** `totalCalls` increments per `lookup_carrier`,
    so three lookups in one conversation return 0, 1, 2 — and it is permanent in Postgres. This
-   is the metric demo contract item 4 rests on.
+   is the metric demo contract item 4 rests on. **Now scheduled as a Day 7 build step** rather
+   than sitting here: the beat had a verification checkbox and no work behind it. Note that
+   `src/lib/tools/tools.test.ts:106` asserts the current, wrong semantics, so the fix is not a
+   one-liner — that test has to change with it.
 9. **The 7-day stale-cache fallback turns a failed FMCSA check from block into flag.** Bounded
    and documented (#16), but it is an authorization check that now defaults to allow on failure,
    and the API being down is when an attacker would prefer to call.
