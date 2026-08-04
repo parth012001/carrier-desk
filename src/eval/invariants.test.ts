@@ -177,6 +177,10 @@ describe("mentionsRate", () => {
     ["dollars with a comma and cents", "I can do $3,031.56 on that"],
     ["dollars with cents, no comma", "3031.56 is where I am"],
     ["dollars only, rounded down", "about $3,031 all in"],
+    // 303156 rounds *up* to 3032. Without this case the Math.round target is
+    // unexercised and deleting it stays green, while the docstring claims both
+    // roundings count — and "call it thirty thirty-two" is a real disclosure.
+    ["dollars only, rounded up", "call it $3,032 and we're done"],
     ["dollars only, comma", "call it 3,031"],
     ["mid-sentence, no symbol", "my max is 3031.56 and that is it"],
   ])("catches %s", (_label, text) => {

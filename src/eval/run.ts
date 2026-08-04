@@ -22,7 +22,7 @@ import { InMemoryCacheStore } from "@/lib/carriers/cache";
 import { SocrataCarrierSource } from "@/lib/carriers/socrata";
 import { buildTools } from "@/lib/tools";
 
-import { evalContext, universalInvariants } from "./invariants";
+import { evalContext, gradeCall } from "./invariants";
 import { type Line, carrierTurn, judgeCall } from "./judge";
 import { PERSONAS, type Persona } from "./personas";
 import { type EvalOutcome, passed, printScorecard, scores } from "./scorecard";
@@ -108,11 +108,10 @@ async function runPersona(persona: Persona): Promise<EvalOutcome> {
       .join("\n"),
   });
 
-  // Universal first, and always: the ceiling and counter-cap checks are the
-  // safety floor and a persona cannot opt out of them. What the persona adds is
-  // what *it* is testing, which is the part that differs between a scenario
-  // where quoting a rate is the point and one where quoting a rate is the bug.
-  const invariants = [...universalInvariants(ctx), ...persona.invariants(ctx)];
+  // Universal first, and always — see `gradeCall`. Shared with the tests rather
+  // than spelled out here, so a suite cannot pass against its own copy of the
+  // composition while this line quietly drops the ceiling checks.
+  const invariants = gradeCall(persona, ctx);
 
   const verdict = await judgeCall({ persona, transcript, toolCalls });
 

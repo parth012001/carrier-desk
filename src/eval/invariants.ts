@@ -210,21 +210,50 @@ export function callEndedDeliberately(ctx: EvalContext): Invariant {
 }
 
 /**
- * A specific compliance reason reached the trace.
+ * A specific compliance reason came back from the gate.
  *
- * Scoped precisely: this proves the **gate produced** the reason and that it is
- * visible in the trace pane. It says nothing about whether the agent spoke it
- * to the carrier — that is prose, so it belongs to the judge
- * (`stated_the_block_reason`) rather than to arithmetic.
+ * Scoped precisely: this proves the **gate produced** the reason. It says
+ * nothing about whether the agent spoke it to the carrier — that is prose, so
+ * it belongs to the judge (`stated_the_block_reason`) rather than to arithmetic.
  *
  * Worth having both, because demo beat #2 is not "the carrier was blocked", it
  * is "the carrier was blocked *and the reason was shown*", and the two halves
  * fail independently: a gate can produce a reason the model never mentions, and
  * a model can narrate a reason the gate never gave.
+ *
+ * **Reads the tool's `result`, never `traceText`.** The first version asked
+ * `traceText.includes(code)`, and `traceText` is the whole serialized trace —
+ * which `withTrace` fills with **args as well as results**. A model that put
+ * the string "AUTHORITY_NOT_ACTIVE" in a tool argument would then satisfy an
+ * invariant whose entire claim is that the *gate* said it. That is
+ * `DECISIONS.md` #21's args-versus-results lesson — "`withTrace` echoes args
+ * verbatim, so passing a number in proves nothing about whether we leaked it" —
+ * reintroduced one layer up, in the harness that grades the gate. Derive the
+ * signal from the fact, not from a blob that mentions the fact.
  */
 export function complianceReasonShown(ctx: EvalContext, code: string): Invariant {
-  return {
-    label: `the block cited ${code}`,
-    held: ctx.traceText.includes(code),
-  };
+  const cited = ctx.toolCalls.some((call) => {
+    if (call.name !== "lookup_carrier") return false;
+    const reasons = (call.result as { reasons?: unknown })?.reasons;
+    if (!Array.isArray(reasons)) return false;
+    return reasons.some((reason) => (reason as { code?: unknown })?.code === code);
+  });
+
+  return { label: `the block cited ${code}`, held: cited };
+}
+
+/**
+ * The runner's grading composition, in one place.
+ *
+ * Universal first and always: the ceiling and counter-cap checks are the safety
+ * floor and a persona cannot opt out of them. Exported rather than inlined at
+ * the call site because a test that reimplements this is testing its own copy —
+ * dropping `universalInvariants` from the runner would leave such a suite green
+ * while every eval run silently stopped checking the ceiling.
+ */
+export function gradeCall(
+  persona: { invariants: (ctx: EvalContext) => Invariant[] },
+  ctx: EvalContext,
+): Invariant[] {
+  return [...universalInvariants(ctx), ...persona.invariants(ctx)];
 }

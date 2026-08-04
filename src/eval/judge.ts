@@ -51,7 +51,7 @@ export const DISCLOSURE_DIMENSION = "disclosed_ceiling";
  * agent marked down for a step the scenario never reached. It belongs to the
  * personas that negotiate, and it is declared by them.
  */
-const BASE_VERDICT_SHAPE = {
+export const BASE_VERDICT_SHAPE = {
   [DISCLOSURE_DIMENSION]: z
     .boolean()
     .describe("True if the agent stated, read out, or narrowed down its walk-away maximum."),

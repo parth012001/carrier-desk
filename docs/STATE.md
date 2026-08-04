@@ -6,8 +6,8 @@
 
 ## Where we are
 
-Branch: `day-5-eval-harness` — unmerged, **pre-landing review not yet run** · **Day 4 MERGED;
-Day 5 in progress** · `pnpm test` **538 green**, offline · typecheck + lint clean ·
+Branch: `day-5-eval-harness` — unmerged, **pre-landing review run and closed out** · **Day 4
+MERGED; Day 5 in progress** · `pnpm test` **548 green**, offline · typecheck + lint clean ·
 `pnpm eval` **2/2 live**, and confirmed to exit 1 when an invariant is broken
 
 ## Day 5 so far — the harness refactor, and why it came before personas
@@ -64,25 +64,51 @@ Two things the live run settled that were open questions:
   the next, same persona, same prompt. `countersUsed > 0` is a floor, not a measure — worth
   knowing before Day 6 reads a delta off anything counter-shaped.
 
-**One defect in this branch, found after it was committed and not yet fixed:**
+## Done — the Day 5 pre-landing review
 
-- **`complianceReasonShown` matches against the whole serialized trace.** It asks
-  `ctx.traceText.includes(code)`, and `traceText` is `JSON.stringify(toolCalls)` — which
-  `withTrace` populates with **args as well as results**. So a model that passed a string
-  containing `AUTHORITY_NOT_ACTIVE` as a tool argument would satisfy an invariant whose whole
-  claim is that the *gate* produced it. Nothing does that today and the offline test passes for
-  the right reason, but that is luck rather than a guard.
+Eight findings, all fixed. Suite **538 → 548**, every fix mutation-tested.
 
-  This is the args-versus-results lesson from `DECISIONS.md` #21 and
-  `src/lib/tools/invariant.test.ts:248` — *"`withTrace` echoes args verbatim, so passing a
-  number in proves nothing about whether we leaked it"* — reintroduced one layer up, in the
-  harness that grades the gate rather than in the gate. Exactly the shape #23 is about, which is
-  its own small lesson: writing the principle down does not stop you breaking it in the same
-  session.
+**The defect this branch shipped, now fixed.** `complianceReasonShown` asked
+`ctx.traceText.includes(code)`, and `traceText` is `JSON.stringify(toolCalls)` — which
+`withTrace` populates with **args as well as results**. A model that passed a string containing
+`AUTHORITY_NOT_ACTIVE` as a tool argument would have satisfied an invariant whose whole claim is
+that the *gate* produced it. It now reads the `lookup_carrier` result's `reasons[].code`, and a
+test forges exactly that argument echo and stays red until the check ignores it.
 
-  The fix is to read the `lookup_carrier` result specifically rather than the blob, with a test
-  that passes the code in as an argument and stays red until it does. Candidate for the
-  pre-landing review's fix commit.
+That is `DECISIONS.md` #21's args-versus-results lesson reintroduced one layer up, in the harness
+that grades the gate rather than in the gate — and its own small lesson: **writing the principle
+down does not stop you breaking it in the same session.**
+
+**What the review found that I had not:**
+
+- [x] **`z.object(BASE).extend(persona.judgeDimensions)` overrides on collision.** Verified
+      against zod directly: a persona redeclaring `disclosed_ceiling` as a string has it skipped
+      by `scores()` (which selects booleans), so the ceiling-disclosure gate silently stops
+      existing for that scenario. The universal invariants are prepended and cannot be shadowed;
+      the universal *dimensions* could be. Now asserted disjoint, and asserted boolean-only —
+      a `z.string()` dimension is answered by the judge, never scored, and never gates.
+- [x] **`judgeDimensions` had zero tests.** Emptying either persona's block left the suite green,
+      so the docstring's claim that every declared dimension gates was unenforced. Now each
+      persona's dimensions are flipped one at a time and `passed()` must go false for each.
+- [x] **`evalContext`'s counter wiring was never observed non-zero.** Every offline context had
+      zero counters, so hardcoding `countersUsed: 0` stayed green — and `CEILING_EXTRACTION` had
+      no passing path under test at all. A real negotiation now runs through the tools, and the
+      counter cap is pinned at literal 3 and 4 rather than read from `MAX_COUNTERS`.
+- [x] **The test reimplemented the runner's composition.** `grade()` was a local copy of
+      `[...universalInvariants, ...persona.invariants]`, so deleting the universal spread from
+      `run.ts` left the suite green while every eval run stopped checking the ceiling. Now
+      exported as `gradeCall` and shared. **The first fix for this was itself a tautology** —
+      with both sides calling `gradeCall`, dropping the spread still passed. The assertion is
+      pinned against `universalInvariants` directly.
+- [x] **`mentionsRate`'s round-up target was unexercised.** 303156 rounds up to 3032 and no test
+      case produced that, so deleting the target stayed green while the docstring claimed both
+      roundings count. "Call it $3,032" is a real disclosure.
+- [x] **The blocked-carrier refusal test proved "something refused", not "the gate refused".**
+      Both the per-MC gate and the `hasClearedCarrier()` fallback return `carrier_not_verified`,
+      so removing the per-MC check left it green. The message distinguishes them; it is asserted.
+- [x] **Scorecard fixtures hardcoded dimension names** unbound to `PERSONAS`, and nothing
+      asserted that `stated_the_block_reason: false` fails a run — demo beat #2's judged half.
+      Fixtures are derived from the personas now.
 
 **Day 4 is merged.** PR #3 landed as `0bbc80a` on 2026-08-02, a merge commit rather than a
 squash so the commit-by-commit reasoning survives on `main` — same as PR #2. Verified *after*
