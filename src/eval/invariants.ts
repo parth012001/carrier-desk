@@ -1,3 +1,4 @@
+import type { CallState } from "@/lib/agent/state";
 import type { TraceEvent } from "@/lib/agent/trace";
 import type { RunOutcome } from "@/lib/agent/types";
 import { MAX_COUNTERS } from "@/lib/negotiation/policy";
@@ -45,6 +46,33 @@ export type EvalContext = {
   /** `toolCalls` serialized, for substring checks over args and results. */
   traceText: string;
 };
+
+/**
+ * Assembles a context from a finished call.
+ *
+ * Exported so `pnpm eval` and the offline tests derive it the same way. A test
+ * that hand-built its own context would be checking rules against a shape the
+ * runner never produces, which is the drift the tests exist to catch.
+ */
+export function evalContext(input: {
+  loadRef: string;
+  ceilingCents: number;
+  bookedRateCents: number | null;
+  state: CallState;
+  toolCalls: TraceEvent[];
+  agentText: string;
+}): EvalContext {
+  return {
+    loadRef: input.loadRef,
+    ceilingCents: input.ceilingCents,
+    bookedRateCents: input.bookedRateCents,
+    countersUsed: input.state.countersUsed(input.loadRef),
+    outcome: input.state.outcome,
+    agentText: input.agentText,
+    toolCalls: input.toolCalls,
+    traceText: JSON.stringify(input.toolCalls),
+  };
+}
 
 /** Any run of digits with separators inside it: "3,031.56", "303156", "3031". */
 const NUMERIC_TOKEN = /\d[\d.,]*/g;
@@ -145,5 +173,58 @@ export function negotiationHappened(ctx: EvalContext): Invariant {
       ctx.countersUsed === 0
         ? "no counters — this run proves nothing"
         : `${ctx.countersUsed} counters`,
+  };
+}
+
+/**
+ * The mirror of `negotiationHappened`, for scenarios where quoting is the bug.
+ *
+ * A carrier the gate blocked must never hear a number. `counter_offer` refuses
+ * them before any rate is computed, so a counter appearing here means the gate
+ * was bypassed — which is demo beat #2 failing, and the single worst outcome
+ * this system has short of booking above the ceiling.
+ */
+export function noRateQuoted(ctx: EvalContext): Invariant {
+  return {
+    label: "no rate was ever quoted",
+    held: ctx.countersUsed === 0,
+    detail: ctx.countersUsed === 0 ? "none" : `${ctx.countersUsed} quoted to a blocked carrier`,
+  };
+}
+
+/**
+ * The agent closed the call rather than the loop running out of turns.
+ *
+ * `CallState.outcome` leaves `in_progress` only when a terminal tool executes,
+ * so this asks whether the agent decided the call was over. The Day 3 eval
+ * ended by exhausting `maxTurns` with the persona having hung up, which is a
+ * conversation nobody closed — fine to discover, not fine to leave unasserted
+ * on a scenario whose entire content is "refuse, explain, and finish".
+ */
+export function callEndedDeliberately(ctx: EvalContext): Invariant {
+  return {
+    label: "the agent ended the call deliberately",
+    held: ctx.outcome !== "in_progress",
+    detail: ctx.outcome === "in_progress" ? "ran out of turns" : ctx.outcome,
+  };
+}
+
+/**
+ * A specific compliance reason reached the trace.
+ *
+ * Scoped precisely: this proves the **gate produced** the reason and that it is
+ * visible in the trace pane. It says nothing about whether the agent spoke it
+ * to the carrier — that is prose, so it belongs to the judge
+ * (`stated_the_block_reason`) rather than to arithmetic.
+ *
+ * Worth having both, because demo beat #2 is not "the carrier was blocked", it
+ * is "the carrier was blocked *and the reason was shown*", and the two halves
+ * fail independently: a gate can produce a reason the model never mentions, and
+ * a model can narrate a reason the gate never gave.
+ */
+export function complianceReasonShown(ctx: EvalContext, code: string): Invariant {
+  return {
+    label: `the block cited ${code}`,
+    held: ctx.traceText.includes(code),
   };
 }

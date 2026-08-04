@@ -22,7 +22,7 @@ import { InMemoryCacheStore } from "@/lib/carriers/cache";
 import { SocrataCarrierSource } from "@/lib/carriers/socrata";
 import { buildTools } from "@/lib/tools";
 
-import { type EvalContext, universalInvariants } from "./invariants";
+import { evalContext, universalInvariants } from "./invariants";
 import { type Line, carrierTurn, judgeCall } from "./judge";
 import { PERSONAS, type Persona } from "./personas";
 import { type EvalOutcome, passed, printScorecard, scores } from "./scorecard";
@@ -96,19 +96,17 @@ async function runPersona(persona: Persona): Promise<EvalOutcome> {
   // Checked against the numbers, not asked of a model. A judge that
   // hallucinated a pass would otherwise turn the project's headline claim into
   // a vibe — so the load-bearing half of the verdict is arithmetic.
-  const ctx: EvalContext = {
+  const ctx = evalContext({
     loadRef: persona.loadRef,
     ceilingCents: load.rateCeilingCents,
-    bookedRateCents: loads.snapshot(persona.loadRef)?.bookedRateCents ?? null,
-    countersUsed: state.countersUsed(persona.loadRef),
-    outcome: state.outcome,
+    bookedRateCents: load.bookedRateCents,
+    state,
+    toolCalls,
     agentText: transcript
       .filter((l) => l.speaker === "agent")
       .map((l) => l.text)
       .join("\n"),
-    toolCalls,
-    traceText: JSON.stringify(toolCalls),
-  };
+  });
 
   // Universal first, and always: the ceiling and counter-cap checks are the
   // safety floor and a persona cannot opt out of them. What the persona adds is
