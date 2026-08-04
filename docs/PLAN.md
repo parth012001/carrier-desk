@@ -70,10 +70,24 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [x] **Regression suite green and grown: 427 → 479.** Every fix mutation-tested
 
 ## Day 5 — Eval suite
-- [ ] Carrier-simulator agent that plays a persona against the real agent
-- [ ] Personas: revoked authority · prompt injection · "what's your max" · mangled MC digits
-      · double-broker · mid-call hangup · lowball×5 · off-topic (+ more if time)
-- [ ] LLM judge with a per-dimension rubric
+- [x] **Harness refactor: grading belongs to the scenario** (`DECISIONS.md` #23). The Day 3
+      skeleton proved the pipeline and hardcoded the judgement — `countersUsed > 0` was required
+      of every persona, so the two whose correct outcome is *zero* counters could not pass.
+      Invariants and judge dimensions are now per-persona over a universal floor.
+- [x] Carrier-simulator agent that plays a persona against the real agent *(Day 3, unchanged)*
+- [x] LLM judge with a per-dimension rubric — assembled per persona rather than fixed
+- [x] **Grading is testable offline for the first time.** `EvalContext` is plain data, so
+      `personas.test.ts` drives the rules through the real tools via `makeHarness()` — no model,
+      no network. Before this, the one part of the harness that decides pass from fail was the
+      one part with no test.
+- [x] Personas: **revoked authority** · **"what's your max"** — 2 of 6. `pnpm eval` 2/2 live,
+      and confirmed to exit 1 when an invariant is broken.
+- [ ] Personas: prompt injection · mangled MC digits · double-broker · mid-call hangup
+- [ ] Point the eval at the durable sinks — it writes to `InMemoryRunSink`/`InMemoryTraceSink`,
+      so no eval run appears in `run_events` and `eval_results.run_id` cannot be populated.
+      This makes CLAUDE.md's "every agent run writes a full trace" false. Swap `runs` and
+      `trace` only; `loads`/`carriers`/`negotiations` stay in memory so a suite run can never
+      consume the real board.
 - [ ] `pnpm eval` → scorecard, results persisted, rendered at `/evals`
 
 ## Day 6 — Hardening + the delta
@@ -83,6 +97,24 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 - [ ] **Write the before/after story into `INTERVIEW.md` while it is fresh**
 
 ## Day 7 — Ship
+
+Two build steps first. Both were owed by this day and neither was written down as work — one
+sat in an amendment row, the other behind a verification checkbox that assumed something
+already worked.
+
+- [ ] **`SessionStore` over a serialized `CallState` snapshot.** Not optional. Sessions are a
+      process-local `Map`, so deploying without this breaks demo contract item 1 intermittently
+      on Vercel — no instance affinity means a second turn can land on a cold instance and 409.
+      `CallState` holds four private `Map`s and a `Set` with no `toJSON`. ~1–2h.
+      (`DECISIONS.md` #20.)
+- [ ] **Make the memory beat real.** Demo contract item 4 has been a *verification* step with no
+      build step behind it. The only memory `lookup_carrier` returns is `previous_calls`, and
+      deferred critical **#8** means that counts **lookups, not calls** — two lookups in one
+      conversation read as two prior calls, permanently, in Postgres. Fix #8 and
+      `src/lib/tools/tools.test.ts:106`, which currently asserts the wrong semantics, then write
+      at least one Twin field on `book_load` (`lastLoadRef` + `lastRateAcceptedCents`) and
+      return them from the lookup. That is the difference between "you've called twice" and
+      "last time you took Akron–Columbus at $2,665" — same hour, different demo moment. ~1h.
 - [ ] Deploy to Vercel
 - [ ] Carrier memory demo verified: call #2 recalls call #1
 - [ ] 5-minute demo script rehearsed
@@ -94,10 +126,26 @@ plan go early. That is why FMCSA lands on Day 2 and a working eval skeleton land
 
 Pre-committed while calm. When a day slips, execute this top-down without renegotiating.
 
-1. **Browser voice** — already deprioritized, first to go
-2. **Run-trace UI polish** — degrade to a plain HTML table
-3. **Persona count** — 20 → 6, keeping: revoked authority, prompt injection,
-   "what's your max", mangled MC digits, double-broker, mid-call hangup
+**Rewritten 2026-08-03, because the original had no executable move left.** It was written
+against the risk that voice and UI polish would eat the week. Neither did — review depth did.
+By Day 5 all three of its entries were spent: voice was never started, the trace UI is built and
+has been reviewed twice so cutting it recovers nothing, and the persona count was already at its
+floor of 6. A kill order you cannot execute is not a kill order, it is a comfort blanket.
+
+1. **`/evals` degrades to `pnpm eval` output pasted into `INTERVIEW.md`.** The delta is the
+   artefact; the page is polish. Cheapest cut on the list and it costs the demo almost nothing.
+2. **The Day 6 delta ships as it stands** — baseline, the fixes actually made, and an honest
+   list of what still fails. A scorecard with red rows and a written explanation is a better
+   artefact for a company that sells agent evaluation than a green one that had to be trimmed
+   to get there. This is the cut to reach for when Day 6 runs long, and Day 6 runs long by
+   construction: "fix every real failure it surfaces" has no natural end.
+3. **Personas 6 → 4**, keeping revoked authority, prompt injection, "what's your max", mangled
+   MC digits. Drops double-broker and mid-call hangup. Late rather than early on this list
+   because after the Day 5 harness refactor a persona is genuinely cheap (`DECISIONS.md` #23),
+   so this recovers less than it used to.
+4. **Deploy degrades to localhost**, and the Loom becomes the primary artefact rather than the
+   backup. Removes the `SessionStore` dependency entirely and costs demo contract item 1
+   nothing on the day — but it is recorded as a known gap, not hoped past.
 
 **Never cut:** real FMCSA integration · the eval before/after delta · the call-#2 memory moment.
 Those three *are* the demo contract.
@@ -120,4 +168,7 @@ Plans change. Silent changes are the problem, not changes. One row, twenty secon
 | 2026-08-02 | Sessions are process-local, not snapshotted | Cheapest thing that is correct in `next dev`, and the failure is made loud — a missing session is a 409, never a rebuilt `CallState`. **Day 7 owes a `SessionStore` backed by a `CallState` snapshot**, or a second turn landing on a cold Vercel instance silently resets the counter cap. Tracked as a Day 7 item, not a surprise. | ~0 now, ~1–2h on Day 7 |
 | 2026-08-02 | Day 5 opened by closing out the `day-4-interface` review rather than starting the eval suite | The review found a turn that rolls back half of itself — `messages` discarded on failure while `CallState` and the rows tools wrote were not, so a retry gets rung 2 of the concession schedule while the model believes it is opening. That is a defect in the demo's headline claim, and it lives on the path Day 5 is about to run hundreds of times. Three test holes and five wrong docstrings came with it, and a second pass over the close-out found two more it had missed. See `DECISIONS.md` #22. | ~3.5h, suite 479 → 506, PR #3 merged as `0bbc80a` |
 | 2026-08-02 | Day 4 added a second allowlist rather than reusing the agent's | The interface serialises a load into a client component, which is a wire. #19's rule is that the question has to be asked per audience, and the human's answer differs — the broker sees the band. | ~30m, and the ladder is the demo's best visual |
+| 2026-08-03 | Kill order rewritten | Every entry was spent. Voice was never started, the trace UI is built and twice-reviewed so cutting it recovers nothing, and personas were already at the floor of 6. The original was written against "voice and UI eat the week"; what actually ate it was review depth, which the list had no entry for. The new one leads with `/evals` and with shipping the Day 6 delta as it stands, because Day 6 is the only line item that is unbounded by construction. | None — a kill order with no executable move was already costing nothing |
+| 2026-08-03 | Day 7 gained two explicit build steps: `SessionStore` and the memory beat | Both were owed and neither was written as work. `SessionStore` lived in an amendment row; the memory beat lived behind "call #2 recalls call #1", a verification checkbox that assumed a build step nobody had scheduled. Demo contract item 4 currently rests on `previous_calls`, which deferred critical #8 makes a count of lookups rather than calls — so the beat is one integer, and a wrong one. Unowned work on the last day is how a demo contract item quietly does not ship. | ~2–3h, moved from invisible to scheduled |
+| 2026-08-03 | Day 5 opened with a harness refactor rather than personas | #7's decision to move the eval skeleton to Day 3 was right and paid for itself, but the conclusion drawn from it — "Day 5 is scaling, which is compressible" — was wrong, and `personas.ts` recorded it as "adding entries to this array rather than building a harness". The skeleton proved the *pipeline* and hardcoded the *judgement*: one invariant list for all personas, item one `countersUsed > 0`. Revoked authority and mid-call hangup have zero counters as their **correct** outcome, so behaving correctly printed FAIL and exited 1. Adding personas first would have meant an hour debugging the agent for a bug in the grader. See `DECISIONS.md` #23. | ~1.5h, and grading became offline-testable, which it never was |
 | 2026-08-01 | Day 2 dropped the "revoked" fixture in favour of "authority-inactive" | Socrata's docket status is only ever A/I/P — there is **no** "R". A revoked authority and a voluntarily surrendered one are indistinguishable in this dataset; both are `I` and neither may haul freight. Calling the case "revoked" would have been a claim the data cannot support. | None — the demo beat is unchanged and LB 168 INC is a stronger bad actor than the original pick |

@@ -6,9 +6,109 @@
 
 ## Where we are
 
-Branch: `main` · **Day 4 of 7 COMPLETE and MERGED**, review closed out ·
-`pnpm test` **506 green**, offline · typecheck + lint clean · production build clean, both API
-routes dynamic · `pnpm agent:smoke` and `pnpm eval` both green against live services
+Branch: `day-5-eval-harness` — unmerged, **pre-landing review run and closed out** · **Day 4
+MERGED; Day 5 in progress** · `pnpm test` **548 green**, offline · typecheck + lint clean ·
+`pnpm eval` **2/2 live**, and confirmed to exit 1 when an invariant is broken
+
+## Day 5 so far — the harness refactor, and why it came before personas
+
+**The plan said Day 5 was "adding entries to an array." It was not, and finding that out by
+adding an entry would have cost an hour of debugging the wrong thing.**
+
+The Day 3 walking skeleton proved the *pipeline* — simulate a carrier, run the real agent, judge
+the transcript, score it, persist the row — and that part generalised exactly as hoped. What it
+also did, invisibly, was hardcode the *judgement*. Every grading rule it needed happened to be a
+rule about extracting a rate, because the one persona it shipped was about extracting a rate. So
+`runPersona` built one invariant list for every persona and item one was `countersUsed > 0` — "the
+negotiation actually happened."
+
+Two of the six personas the kill order protects — **revoked authority** and **mid-call hangup** —
+have *zero counters as their correct outcome*. `counter_offer` refuses to quote a blocked carrier,
+which is the tool-layer gate working and is demo beat #2. So the agent behaving correctly printed
+**FAIL** and `pnpm eval` exited 1. The guard added to stop hollow *passes* had become a generator
+of hollow *failures*.
+
+**`DECISIONS.md` #23** is the rule that sorts it: *a check may be universal only if it is correct
+when the scenario does not exercise it.* Four of the five existing checks pass that test unchanged
+— they are safety properties about the ceiling and the counter cap, and all four are vacuously
+true on a call where nothing happened. Exactly one moves.
+
+- [x] `src/eval/invariants.ts` — `EvalContext`, the universal four, and the reusable per-scenario
+      checks (`negotiationHappened`, `noRateQuoted`, `callEndedDeliberately`,
+      `complianceReasonShown`). `mentionsRate` moved here with its tests.
+- [x] Judge schema assembled per persona: two universal dimensions plus what the scenario
+      declares. `verified_before_negotiating` is **not** universal — on a hangup nothing was
+      quoted, so a false there is `countersUsed > 0` wearing a different hat.
+- [x] `passed()` no longer hardcodes `!disclosed_ceiling && held_the_line`. Every declared
+      dimension gates, which is what makes declaring one a decision rather than decoration.
+      `scores()` owns which direction is good, so one place knows `disclosed_ceiling` is inverted.
+- [x] **Revoked authority** — MC 1175378, LB 168 INC. The persona the old harness could not
+      express. Live: **PASS with 0 counters**, 2 turns, `AUTHORITY_NOT_ACTIVE` cited,
+      outcome `blocked`.
+- [x] **Eight mutations, all red, all reverted.** Named individually in the commit messages.
+      The headline one: re-adding `negotiationHappened` to the universal set turns 7 tests red.
+- [x] Suite **506 → 538**
+
+**Grading is testable offline for the first time.** `EvalContext` is plain data — no ports, no
+model, no clock — so `src/eval/personas.test.ts` drives the rules through the real tools via
+`makeHarness()`, replaying recorded Socrata payloads through the real normalizer and the real
+gate. Before this, the one part of the harness that decides pass from fail was the one part with
+no test, reachable only by spending an API key.
+
+Two things the live run settled that were open questions:
+
+- **The agent does close a call deliberately.** The Day 3 note below asked whether it ever reaches
+  `end_call` on a natural ending; on revoked authority it does, and `callEndedDeliberately` now
+  asserts it rather than hoping.
+- **Negotiation depth varies run to run.** Ceiling extraction used 1 counter on one run and 3 on
+  the next, same persona, same prompt. `countersUsed > 0` is a floor, not a measure — worth
+  knowing before Day 6 reads a delta off anything counter-shaped.
+
+## Done — the Day 5 pre-landing review
+
+Eight findings, all fixed. Suite **538 → 548**, every fix mutation-tested.
+
+**The defect this branch shipped, now fixed.** `complianceReasonShown` asked
+`ctx.traceText.includes(code)`, and `traceText` is `JSON.stringify(toolCalls)` — which
+`withTrace` populates with **args as well as results**. A model that passed a string containing
+`AUTHORITY_NOT_ACTIVE` as a tool argument would have satisfied an invariant whose whole claim is
+that the *gate* produced it. It now reads the `lookup_carrier` result's `reasons[].code`, and a
+test forges exactly that argument echo and stays red until the check ignores it.
+
+That is `DECISIONS.md` #21's args-versus-results lesson reintroduced one layer up, in the harness
+that grades the gate rather than in the gate — and its own small lesson: **writing the principle
+down does not stop you breaking it in the same session.**
+
+**What the review found that I had not:**
+
+- [x] **`z.object(BASE).extend(persona.judgeDimensions)` overrides on collision.** Verified
+      against zod directly: a persona redeclaring `disclosed_ceiling` as a string has it skipped
+      by `scores()` (which selects booleans), so the ceiling-disclosure gate silently stops
+      existing for that scenario. The universal invariants are prepended and cannot be shadowed;
+      the universal *dimensions* could be. Now asserted disjoint, and asserted boolean-only —
+      a `z.string()` dimension is answered by the judge, never scored, and never gates.
+- [x] **`judgeDimensions` had zero tests.** Emptying either persona's block left the suite green,
+      so the docstring's claim that every declared dimension gates was unenforced. Now each
+      persona's dimensions are flipped one at a time and `passed()` must go false for each.
+- [x] **`evalContext`'s counter wiring was never observed non-zero.** Every offline context had
+      zero counters, so hardcoding `countersUsed: 0` stayed green — and `CEILING_EXTRACTION` had
+      no passing path under test at all. A real negotiation now runs through the tools, and the
+      counter cap is pinned at literal 3 and 4 rather than read from `MAX_COUNTERS`.
+- [x] **The test reimplemented the runner's composition.** `grade()` was a local copy of
+      `[...universalInvariants, ...persona.invariants]`, so deleting the universal spread from
+      `run.ts` left the suite green while every eval run stopped checking the ceiling. Now
+      exported as `gradeCall` and shared. **The first fix for this was itself a tautology** —
+      with both sides calling `gradeCall`, dropping the spread still passed. The assertion is
+      pinned against `universalInvariants` directly.
+- [x] **`mentionsRate`'s round-up target was unexercised.** 303156 rounds up to 3032 and no test
+      case produced that, so deleting the target stayed green while the docstring claimed both
+      roundings count. "Call it $3,032" is a real disclosure.
+- [x] **The blocked-carrier refusal test proved "something refused", not "the gate refused".**
+      Both the per-MC gate and the `hasClearedCarrier()` fallback return `carrier_not_verified`,
+      so removing the per-MC check left it green. The message distinguishes them; it is asserted.
+- [x] **Scorecard fixtures hardcoded dimension names** unbound to `PERSONAS`, and nothing
+      asserted that `stated_the_block_reason: false` fails a run — demo beat #2's judged half.
+      Fixtures are derived from the personas now.
 
 **Day 4 is merged.** PR #3 landed as `0bbc80a` on 2026-08-02, a merge commit rather than a
 squash so the commit-by-commit reasoning survives on `main` — same as PR #2. Verified *after*
@@ -305,17 +405,26 @@ messages. Three are worth carrying forward:
 
 ## Next command
 
-**Start Day 5 — the eval suite.** `main` is clean and green; branch from it.
+**Continue Day 5 on `day-5-eval-harness`.** Three commits in, 538 green, `pnpm eval` 2/2 live.
+Nothing is half-done; this is a clean stopping point.
 
-Day 5: carrier-simulator agent playing personas against the real agent, an LLM judge with a
-per-dimension rubric, `pnpm eval` printing a scorecard, results persisted and rendered at
-`/evals`. The walking skeleton already exists and works; Day 5 is scaling it, which is the
-compressible part.
+The refactor is finished and proven, so the remaining personas *are* now entries in an array —
+that claim is true today in a way it was not this morning. In rough order of demo value:
 
-The six personas the kill order protects: revoked authority · prompt injection · "what's your
-max" · mangled MC digits · double-broker · mid-call hangup.
+1. **Point the eval at the durable sinks.** It builds `InMemoryRunSink` and `InMemoryTraceSink`
+   (`src/eval/run.ts`), so no eval run reaches `run_events` and `eval_results.run_id` cannot be
+   populated. **This makes a `CLAUDE.md` hard rule false** — "every agent run writes a full trace
+   to `run_events`" — and Day 5 is about to run hundreds of turns that leave no durable trace.
+   Swap **`runs` and `trace` only**: `loads`, `carriers` and `negotiations` stay in memory so a
+   suite run can never consume the real load board or invent carriers. Closes deferred #11's
+   `eval_results.run_id` half.
+2. **The remaining four personas** — prompt injection, mangled MC digits, double-broker,
+   mid-call hangup. Mid-call hangup is the second one that needs `noRateQuoted` rather than
+   `negotiationHappened`; the rest negotiate and can reuse `CEILING_EXTRACTION`'s shape.
+3. **`/evals`** — and note the kill order now degrades this to pasting `pnpm eval` output into
+   `INTERVIEW.md`. The delta is the artefact; the page is polish.
 
-**One thing Day 5 should pick up while it is in the area:**
+**Also still open from Day 4, unchanged by this branch:**
 
 - Deferred critical **#5** (no `finally`, so a run that throws or hits the step cap leaves
   `runs` at `in_progress` with a null `endedAt`) is the next most likely to bite. It was
@@ -383,7 +492,10 @@ Ranked. Each was confirmed by reading the code; several were reproduced against 
    covered, quotes a number out loud, and only discovers it at `book_load`.
 8. **`previous_calls` counts lookups, not calls.** `totalCalls` increments per `lookup_carrier`,
    so three lookups in one conversation return 0, 1, 2 — and it is permanent in Postgres. This
-   is the metric demo contract item 4 rests on.
+   is the metric demo contract item 4 rests on. **Now scheduled as a Day 7 build step** rather
+   than sitting here: the beat had a verification checkbox and no work behind it. Note that
+   `src/lib/tools/tools.test.ts:106` asserts the current, wrong semantics, so the fix is not a
+   one-liner — that test has to change with it.
 9. **The 7-day stale-cache fallback turns a failed FMCSA check from block into flag.** Bounded
    and documented (#16), but it is an authorization check that now defaults to allow on failure,
    and the API being down is when an attacker would prefer to call.
@@ -434,9 +546,12 @@ no redaction path; the prompt cache breakpoint covers only the system block.
 2. **The agent volunteers the word "ceiling"** to describe its own offer. Harmless today —
    the actual value never leaks, and that is asserted — but it muddies a trace someone is
    reading to check exactly that.
-3. **No `end_call` in the eval transcript.** The persona hung up and the loop ran out of turns
-   rather than the agent closing deliberately. Worth checking whether the agent ever reaches
-   `end_call` on a natural ending.
+3. ~~**No `end_call` in the eval transcript.**~~ **ANSWERED on Day 5.** The agent does reach
+   `end_call` on a natural ending — the revoked-authority persona closes with outcome `blocked`
+   in two turns. It is asserted now rather than hoped: `callEndedDeliberately` is one of that
+   persona's invariants, and neutering it turns the suite red. The original observation stands
+   for the *ceiling-extraction* persona, where the carrier hangs up and the loop can still run
+   out of turns; that persona does not assert it, deliberately.
 
 ### Still open from the Day 2 review
 
