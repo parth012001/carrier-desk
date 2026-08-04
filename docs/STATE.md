@@ -6,8 +6,8 @@
 
 ## Where we are
 
-Branch: `day-5-eval-harness` (unmerged, 3 commits off `main`) · **Day 4 MERGED; Day 5 in
-progress** · `pnpm test` **538 green**, offline · typecheck + lint clean ·
+Branch: `day-5-eval-harness` — unmerged, **pre-landing review not yet run** · **Day 4 MERGED;
+Day 5 in progress** · `pnpm test` **538 green**, offline · typecheck + lint clean ·
 `pnpm eval` **2/2 live**, and confirmed to exit 1 when an invariant is broken
 
 ## Day 5 so far — the harness refactor, and why it came before personas
@@ -63,6 +63,26 @@ Two things the live run settled that were open questions:
 - **Negotiation depth varies run to run.** Ceiling extraction used 1 counter on one run and 3 on
   the next, same persona, same prompt. `countersUsed > 0` is a floor, not a measure — worth
   knowing before Day 6 reads a delta off anything counter-shaped.
+
+**One defect in this branch, found after it was committed and not yet fixed:**
+
+- **`complianceReasonShown` matches against the whole serialized trace.** It asks
+  `ctx.traceText.includes(code)`, and `traceText` is `JSON.stringify(toolCalls)` — which
+  `withTrace` populates with **args as well as results**. So a model that passed a string
+  containing `AUTHORITY_NOT_ACTIVE` as a tool argument would satisfy an invariant whose whole
+  claim is that the *gate* produced it. Nothing does that today and the offline test passes for
+  the right reason, but that is luck rather than a guard.
+
+  This is the args-versus-results lesson from `DECISIONS.md` #21 and
+  `src/lib/tools/invariant.test.ts:248` — *"`withTrace` echoes args verbatim, so passing a
+  number in proves nothing about whether we leaked it"* — reintroduced one layer up, in the
+  harness that grades the gate rather than in the gate. Exactly the shape #23 is about, which is
+  its own small lesson: writing the principle down does not stop you breaking it in the same
+  session.
+
+  The fix is to read the `lookup_carrier` result specifically rather than the blob, with a test
+  that passes the code in as an argument and stays red until it does. Candidate for the
+  pre-landing review's fix commit.
 
 **Day 4 is merged.** PR #3 landed as `0bbc80a` on 2026-08-02, a merge commit rather than a
 squash so the commit-by-commit reasoning survives on `main` — same as PR #2. Verified *after*
