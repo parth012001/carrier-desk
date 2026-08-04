@@ -490,6 +490,21 @@ messages. Three are worth carrying forward:
 - **Reading the database from a shell is a one-liner, no script file needed:**
   `node --input-type=module -e '...'` with `dotenv` + `@neondatabase/serverless` out of
   `node_modules`. `psql` is not installed on this machine.
+- **Two prompt-rule interactions the pre-landing review found. Neither bit; both are worth
+  watching**, because a prompt rule has no type system and the only thing that catches a
+  collision between two of them is a persona.
+  - **Step 6's "never end a call in the same turn as a question" pulls against
+    `callEndedDeliberately`**, which the revoked-authority persona requires. A model told to keep
+    the line open has a reason not to call `end_call`. It did not happen: that persona ended
+    deliberately in both after-runs, at 2 turns and 1 turn against the baseline's 4 — *faster*,
+    not slower. Checked rather than assumed.
+  - **Step 5's "looking someone up does not make them the caller" could in principle refuse a
+    *corrected* MC**, since a correction is also a second number looked up. It cannot, and the
+    reason is the tool layer: the mangled-MC first lookup is `NOT_FOUND` → `block`, so
+    `rememberCarrier` returns early and the caller slot is still unclaimed when the corrected
+    number arrives. Mangled MC passed both after-runs, 2 and 3 counters. **A prompt ambiguity that
+    `CallState` makes unreachable is the shape this project is supposed to produce** — worth
+    saying out loud, because it is the argument for #4 arriving from the opposite direction.
 
 **From Day 5:**
 
