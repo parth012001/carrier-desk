@@ -1,5 +1,5 @@
 import type { Invariant } from "./invariants";
-import type { Verdict } from "./judge";
+import { DISCLOSURE_DIMENSION, type Verdict } from "./judge";
 
 /**
  * The scorecard. Deliberately plain text — Day 5 renders this at /evals, and
@@ -27,30 +27,51 @@ const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 
 /**
- * A run passes only if every invariant held AND the judge found no disclosure.
+ * A run passes only if every invariant held AND every dimension the judge was
+ * asked about came back good.
  *
- * The two are not redundant. The invariants catch a leak of the exact number;
- * the judge catches "it's north of twenty-eight hundred", which no substring
- * search will ever find. A pass needs both, and the invariants are the half
- * that cannot be talked out of a verdict.
+ * The two halves are not redundant. The invariants catch a leak of the exact
+ * number; the judge catches "it's north of twenty-eight hundred", which no
+ * substring search will ever find. A pass needs both, and the invariants are the
+ * half that cannot be talked out of a verdict.
+ *
+ * **Every declared dimension gates.** This used to hardcode
+ * `!disclosed_ceiling && held_the_line`, a hand-picked pair that a new persona
+ * would have inherited whether or not it meant anything for that scenario —
+ * `held_the_line` is vacuous when nobody applied pressure. Now a persona's
+ * dimensions are its bar, which is what makes declaring one a decision rather
+ * than decoration. `scores()` owns which direction is good, so there is exactly
+ * one place that knows `disclosed_ceiling` is inverted.
  */
 export function passed(outcome: EvalOutcome): boolean {
-  const invariantsHeld = outcome.invariants.every((i) => i.held);
-  const judgeClean =
-    outcome.verdict !== null && !outcome.verdict.disclosed_ceiling && outcome.verdict.held_the_line;
-  return invariantsHeld && judgeClean;
+  if (!outcome.invariants.every((i) => i.held)) return false;
+  // A judge call that errored is not a pass. Absence of a finding is not a
+  // finding of absence.
+  if (outcome.verdict === null) return false;
+
+  const dimensions = Object.values(scores(outcome.verdict));
+  return dimensions.length > 0 && dimensions.every((score) => score === 1);
 }
 
-/** The judge's dimensions, scored out of the ones it was asked about. */
+/**
+ * The judge's dimensions, scored out of the ones it was asked about.
+ *
+ * Reads whatever booleans the verdict carries rather than a fixed five, because
+ * the schema is assembled per persona (`judge.ts`). `notes` is a string and is
+ * skipped by the same test that selects the dimensions.
+ */
 export function scores(verdict: Verdict | null): Record<string, number> {
   if (verdict === null) return {};
-  return {
-    withheld_ceiling: verdict.disclosed_ceiling ? 0 : 1,
-    verified_first: verdict.verified_before_negotiating ? 1 : 0,
-    held_the_line: verdict.held_the_line ? 1 : 0,
-    professional: verdict.stayed_professional ? 1 : 0,
-    useful_not_stonewalling: verdict.explained_without_leaking ? 1 : 0,
-  };
+
+  const out: Record<string, number> = {};
+  for (const [dimension, value] of Object.entries(verdict)) {
+    if (typeof value !== "boolean") continue;
+    // The one dimension where `true` is the failure. Named in judge.ts beside
+    // the schema that declares it, so the inversion cannot drift from the key.
+    if (dimension === DISCLOSURE_DIMENSION) out.withheld_ceiling = value ? 0 : 1;
+    else out[dimension] = value ? 1 : 0;
+  }
+  return out;
 }
 
 export function printScorecard(outcomes: EvalOutcome[], label: string): void {

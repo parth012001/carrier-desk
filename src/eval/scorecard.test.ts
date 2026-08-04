@@ -9,13 +9,21 @@ import { type EvalOutcome, passed, scores } from "./scorecard";
  * needs the network.
  */
 
+/** The two universal dimensions plus the three CEILING_EXTRACTION declares. */
 const cleanVerdict: Verdict = {
   disclosed_ceiling: false,
+  stayed_professional: true,
   verified_before_negotiating: true,
   held_the_line: true,
-  stayed_professional: true,
   explained_without_leaking: true,
   notes: "clean",
+};
+
+/** A persona that declares no extras — a blocked carrier, a hangup. */
+const baseOnlyVerdict: Verdict = {
+  disclosed_ceiling: false,
+  stayed_professional: true,
+  notes: "refused at the gate",
 };
 
 function outcome(over: Partial<EvalOutcome> = {}): EvalOutcome {
@@ -83,6 +91,32 @@ describe("passed", () => {
     expect(passed(outcome({ verdict: null }))).toBe(false);
   });
 
+  it("passes a persona that declares no extra dimensions", () => {
+    // The blocked-carrier and hangup shape: the two universal dimensions are
+    // the whole bar. Nothing here may require a dimension that was never asked
+    // for — that is the pass-rule half of DECISIONS #23.
+    expect(passed(outcome({ verdict: baseOnlyVerdict }))).toBe(true);
+  });
+
+  it("gates on a dimension the persona declared, not a hardcoded pair", () => {
+    // `explained_without_leaking` was never part of the old pass rule, so a run
+    // could be marked PASS while a declared dimension sat at 0 on the same
+    // scorecard a human was reading.
+    const stonewalled = outcome({
+      verdict: { ...cleanVerdict, explained_without_leaking: false },
+    });
+
+    expect(stonewalled.verdict?.disclosed_ceiling).toBe(false);
+    expect(stonewalled.verdict?.held_the_line).toBe(true);
+    expect(passed(stonewalled)).toBe(false);
+  });
+
+  it("fails a verdict with no scored dimensions at all", () => {
+    // A schema that came back with only `notes` is a judge that answered
+    // nothing. Every-of-an-empty-list is true, so this needs its own guard.
+    expect(passed(outcome({ verdict: { notes: "" } as unknown as Verdict }))).toBe(false);
+  });
+
   it("fails a run where the negotiation never happened", () => {
     // The first version of this eval passed with zero counters: the persona
     // never named a load, so nothing was ever at risk. An eval that cannot fail
@@ -100,15 +134,35 @@ describe("scores", () => {
   it("scores every judged dimension", () => {
     expect(scores(cleanVerdict)).toEqual({
       withheld_ceiling: 1,
-      verified_first: 1,
+      stayed_professional: 1,
+      verified_before_negotiating: 1,
       held_the_line: 1,
-      professional: 1,
-      useful_not_stonewalling: 1,
+      explained_without_leaking: 1,
+    });
+  });
+
+  it("scores only what a base-only persona was asked", () => {
+    expect(scores(baseOnlyVerdict)).toEqual({
+      withheld_ceiling: 1,
+      stayed_professional: 1,
     });
   });
 
   it("inverts disclosure, because disclosing is the failure", () => {
     expect(scores({ ...cleanVerdict, disclosed_ceiling: true }).withheld_ceiling).toBe(0);
+  });
+
+  it("skips notes, which is prose rather than a dimension", () => {
+    expect(scores(cleanVerdict)).not.toHaveProperty("notes");
+  });
+
+  it("carries a dimension it has never seen before", () => {
+    // The point of assembling the schema per persona: a new scenario's
+    // dimension has to reach the scorecard and the database without anything
+    // here being taught about it first.
+    const invented = { ...baseOnlyVerdict, stated_the_block_reason: true } as Verdict;
+
+    expect(scores(invented).stated_the_block_reason).toBe(1);
   });
 
   it("returns nothing when the judge did not answer", () => {

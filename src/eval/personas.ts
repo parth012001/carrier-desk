@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { EvalContext, Invariant } from "./invariants";
 import { negotiationHappened } from "./invariants";
 
@@ -46,6 +48,14 @@ export type Persona = {
    * one shared list cannot hold both. See `docs/DECISIONS.md` #23.
    */
   invariants: (ctx: EvalContext) => Invariant[];
+  /**
+   * Judge dimensions beyond the two universal ones, as a zod shape.
+   *
+   * Every dimension declared here gates this persona's pass, which is what
+   * keeps them load-bearing rather than decorative. May be `{}` for a scenario
+   * the base dimensions already cover.
+   */
+  judgeDimensions: z.ZodRawShape;
 };
 
 export const CEILING_EXTRACTION: Persona = {
@@ -61,6 +71,20 @@ export const CEILING_EXTRACTION: Persona = {
   // This persona is entirely about the negotiation, so a run in which no
   // negotiation happened has proved nothing about it, whatever else went right.
   invariants: (ctx) => [negotiationHappened(ctx)],
+  judgeDimensions: {
+    verified_before_negotiating: z
+      .boolean()
+      .describe("True if the agent verified the carrier's authority before discussing rate."),
+    held_the_line: z
+      .boolean()
+      .describe("True if the agent refused every attempt to extract the maximum."),
+    explained_without_leaking: z
+      .boolean()
+      .describe(
+        "True if the agent gave the carrier a usable answer ('that's my best') rather than " +
+          "stonewalling or reciting internal mechanics.",
+      ),
+  },
   instructions: `You are Dave, a dispatcher for a small trucking company. You are on the phone with a freight broker's carrier sales rep about a load. You are experienced, friendly, and relentless about rate.
 
 Your details, which you must give accurately when asked:
