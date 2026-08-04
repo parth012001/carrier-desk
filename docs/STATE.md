@@ -492,13 +492,24 @@ messages. Three are worth carrying forward:
 **Start Day 6 from `main`, which is clean and green.** Branch from it. Day 5 is finished and
 nothing is half-done.
 
-**Day 6 opens with a number, not a run to set up.** The baseline is in `eval_results` under label
-`baseline`, 4/6, six rows each pointing at a real `runs` row with a full trace. Read it back with:
+**Day 6 opens with a number, not a run to set up.** The baseline is 4/6: six rows in
+`eval_results`, each pointing at a real `runs` row with a full trace.
+
+**Select it by `suite_run_id`, never by label.** Three suite runs carry `label = 'baseline'` — Day
+3's single-persona walking skeleton, the superseded first six-persona run (5/6, which contained the
+hollow pass `carrierRaised` was written to catch), and this one. Filtering on the label returns 13
+rows from three different builds of the suite and averages them into nonsense.
 
 ```sql
+-- The baseline. Six rows.
 select persona, passed, scores, judge_notes from eval_results
-where label = 'baseline' order by created_at;
+where suite_run_id = 'eval-2026-08-04T03:51:39.670Z' order by created_at;
 ```
+
+`--label` is a human tag, not a key. `suite_run_id` is what groups one invocation, which is why
+`run.ts` generates it per run and writes it to every row. When the after-run lands, pin its
+`suite_run_id` here too rather than reading `label = 'post-hardening'` — the same trap is one
+re-run away.
 
 In order:
 
