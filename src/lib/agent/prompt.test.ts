@@ -63,6 +63,29 @@ describe("the system prompt", () => {
     expect(lower).toContain("looking someone up does not make them the caller");
   });
 
+  /**
+   * The other Day 6 baseline failure, and the two halves of it are separate
+   * rules on purpose — one about what a `NOT_FOUND` means, one about when a
+   * call may end — so that each is independently killable. Deleting either
+   * sentence must take exactly one of these two tests with it; if one test
+   * covered both, a mutation could remove half the fix and stay green.
+   *
+   * What happened: the agent looked up MC 1868000, got `NOT_FOUND`, asked the
+   * carrier to double-check the number, and called `end_call` in the same turn.
+   * It hung up on a question it had just asked, so the corrected number never
+   * arrived and `the negotiation actually happened` failed at 1 turn and 0
+   * counters. Step 2 had collapsed "blocked" and "could not be found" into one
+   * instruction, and a not-found number is not a finding about the person.
+   */
+  it("treats a number it could not find as a number, not as a verdict on the caller", () => {
+    expect(lower).toContain("could not be found at all is a different situation");
+    expect(lower).toContain("ask them to read it back to you");
+  });
+
+  it("does not let the agent hang up on a question it just asked", () => {
+    expect(lower).toContain("never end one in the same turn as a question");
+  });
+
   it("names every tool the agent is expected to reach for", () => {
     for (const name of [
       "lookup_carrier",
